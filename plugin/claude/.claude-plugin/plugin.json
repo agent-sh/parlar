@@ -1,0 +1,6 @@
+{
+  "name": "parley",
+  "version": "0.1.0",
+  "description": "Voice conversation mode: talk to this session and hear it talk back",
+  "license": "MIT OR Apache-2.0"
+}
