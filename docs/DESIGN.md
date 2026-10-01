@@ -271,4 +271,9 @@ Claude Code statusLine (`refreshInterval: 1`).
   waits for it to end. parlard says so itself, once per call, instead of forcing tools into the
   background: the owner ruled out changing how the model runs ("wait on it is cheaper than
   fetching repeatedly").
+- D18 (2026-10-01): Claude Code fires no hook on Escape (verified: no PostToolUse, no Stop), so an
+  interrupted session had no waiter and could not be woken by voice. A typed prompt now parks the
+  background waiter instead of dropping it, and parlard watches the focused session's transcript
+  for "[Request interrupted by user" to end the turn and let the parked waiter wake it. Codex has
+  an Interrupt hook for the same.
 

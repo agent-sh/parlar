@@ -5,6 +5,7 @@
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook prompt --harness codex", "timeout": 5 }] }],
     "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook pre-tool --harness codex", "timeout": 5 }] }],
     "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook post-tool --harness codex", "timeout": 5 }] }],
+    "Interrupt": [{ "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook interrupt --harness codex", "timeout": 5 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook stop-wait --harness codex", "timeout": 86400 }] }]
   }
 }

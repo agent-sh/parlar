@@ -27,6 +27,8 @@ pub enum Event {
     /// Blocking Stop waiter for harnesses without asyncRewake: hold the turn open until the user
     /// speaks, then block the stop with the utterance.
     StopWait,
+    /// The user interrupted the turn (Codex's Interrupt event).
+    Interrupt,
 }
 
 /// A hook runs on every tool call, so a slow or stuck daemon must cost little.
@@ -41,6 +43,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
     let mut o = origin(session);
     o.cwd = input.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_string);
     o.harness = Some(harness);
+    o.transcript = input.get("transcript_path").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
     if event == Event::Wait {
         return wait(&o);
     }
@@ -148,6 +151,12 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
             }
+        }
+        Event::Interrupt => {
+            c.call(
+                &Request::Event { origin: o, event: TurnEvent::Interrupted, tool: None, detail: None, call: None },
+                quick,
+            )?;
         }
         Event::Wait => unreachable!("handled above"),
     }

@@ -51,6 +51,9 @@ struct Session {
     running: Vec<Call>,
     /// The user was already told that the calls in flight hold their words.
     acked: bool,
+    /// The harness transcript, and its size when last read for an interrupt.
+    transcript_path: Option<String>,
+    transcript_seen: u64,
 }
 
 impl Session {
@@ -72,6 +75,8 @@ impl Session {
             transcript: Vec::new(),
             running: Vec::new(),
             acked: false,
+            transcript_path: None,
+            transcript_seen: 0,
         }
     }
 
@@ -193,6 +198,10 @@ impl State {
             if let Some(h) = o.harness.filter(|_| s.harness == Harness::Other) {
                 s.harness = h;
             }
+            if o.transcript.is_some() && s.transcript_path != o.transcript {
+                s.transcript_path = o.transcript.clone();
+                s.transcript_seen = 0;
+            }
             return Some(i);
         }
         o.session.as_ref()?;
@@ -200,6 +209,7 @@ impl State {
         self.next_key += 1;
         let harness = o.harness.unwrap_or(Harness::Other);
         let mut s = Session::new(key, o.session.clone(), harness, o.cwd.clone().unwrap_or_default());
+        s.transcript_path = o.transcript.clone();
         s.harness_pid = o.harness_pid;
         self.sessions.push(s);
         let i = self.sessions.len() - 1;
@@ -339,24 +349,105 @@ impl State {
             u.text
         );
         let _ = self.ui.send(Ui::Caption { who: "user".into(), text: u.text.clone() });
-        let s = &mut self.sessions[i];
-        s.pending.push(u);
-        if let Some(w) = s.waiter.take() {
-            let mut items = std::mem::take(&mut s.pending);
-            remind(s, &mut items);
-            s.said = false;
-            s.in_turn = true;
-            // the waiting hook may be gone (killed, timed out): keep what it can no longer read
-            if let Err(WaitResult::Items(back)) = w.tx.send(WaitResult::Items(items)) {
-                s.pending = back;
-                s.in_turn = false;
-                s.running.clear();
-            }
-        }
+        self.sessions[i].pending.push(u);
+        self.hand_over(i);
+        let s = &self.sessions[i];
         let to = s.session.clone().or_else(|| Some(format!("mcp:{}", s.mcp_parent.unwrap_or(0))));
         self.emit_phase();
         (id, to)
     }
+}
+
+impl State {
+    /// Give the pending speech to the session's waiter, when the session is idle and has one.
+    /// While a turn runs the tool hooks collect it instead, and a parked waiter keeps waiting.
+    fn hand_over(&mut self, i: usize) {
+        let s = &mut self.sessions[i];
+        if s.in_turn || s.pending.is_empty() {
+            return;
+        }
+        let Some(w) = s.waiter.take() else { return };
+        let mut items = std::mem::take(&mut s.pending);
+        remind(s, &mut items);
+        s.said = false;
+        s.in_turn = true;
+        // the waiting hook may be gone (killed, timed out): keep what it can no longer read
+        if let Err(WaitResult::Items(back)) = w.tx.send(WaitResult::Items(items)) {
+            s.pending = back;
+            s.in_turn = false;
+            s.running.clear();
+        }
+    }
+
+    /// The turn ended without a Stop: the user interrupted it.
+    fn interrupted(&mut self, i: usize) {
+        let s = &mut self.sessions[i];
+        if !s.in_turn {
+            return;
+        }
+        eprintln!("turn interrupted: {}", if s.cwd.is_empty() { "session" } else { s.cwd.as_str() });
+        s.in_turn = false;
+        s.running.clear();
+        s.acked = false;
+        self.hand_over(i);
+        self.emit_phase();
+    }
+
+    /// Claude Code runs no hook when the user presses Escape; the transcript records it. Checked
+    /// for sessions in a turn whose transcript grew since the last look.
+    pub fn check_interrupts(&mut self) {
+        for i in 0..self.sessions.len() {
+            let s = &mut self.sessions[i];
+            let Some(path) = s.transcript_path.clone().filter(|_| s.in_turn) else { continue };
+            let Ok(len) = std::fs::metadata(&path).map(|m| m.len()) else { continue };
+            if len == s.transcript_seen {
+                continue;
+            }
+            s.transcript_seen = len;
+            if ends_interrupted(Path::new(&path), len) {
+                self.interrupted(i);
+            }
+        }
+    }
+}
+
+/// Whether the transcript's last message is Claude Code's interrupt marker.
+fn ends_interrupted(path: &Path, len: u64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 64 * 1024;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
+        return false;
+    }
+    let mut buf = String::new();
+    if f.take(TAIL).read_to_string(&mut buf).is_err() {
+        return false;
+    }
+    last_message_interrupted(&buf)
+}
+
+fn last_message_interrupted(tail: &str) -> bool {
+    for line in tail.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => {
+                let content = &v["message"]["content"];
+                let text = match content {
+                    serde_json::Value::String(t) => t.clone(),
+                    serde_json::Value::Array(parts) => parts
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    _ => String::new(),
+                };
+                return text.trim_start().starts_with("[Request interrupted by user");
+            }
+            Some("assistant") => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn remind(s: &mut Session, items: &mut [Utterance]) {
@@ -452,10 +543,16 @@ impl Daemon {
         eprintln!("parlard listening on {}", path.display());
         let state = self.state.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            let mut n = 0u64;
             loop {
                 tick.tick().await;
-                state.lock().await.prune();
+                let mut st = state.lock().await;
+                st.check_interrupts();
+                if n.is_multiple_of(30) {
+                    st.prune();
+                }
+                n += 1;
             }
         });
         loop {
@@ -635,8 +732,13 @@ impl Daemon {
                 let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
                     TurnEvent::TurnStart => {
-                        // a typed prompt: the idle waiter must not wake a busy session
-                        st.supersede(i);
+                        // a typed prompt. A background waiter stays, parked: speech goes to the
+                        // turn through the tool hooks, and the waiter wakes the session only once
+                        // the turn is over, which matters when it ends without a Stop (Escape). A
+                        // waiter holding a turn open is released, the prompt takes the turn.
+                        if st.sessions[i].waiter.as_ref().is_some_and(|w| w.holds_turn) {
+                            st.supersede(i);
+                        }
                         st.release_held();
                         st.sessions[i].in_turn = true;
                         st.sessions[i].said = true;
@@ -653,6 +755,7 @@ impl Daemon {
                             s.running.push(Call { id, detail, since: std::time::Instant::now() });
                         }
                     }
+                    TurnEvent::Interrupted => st.interrupted(i),
                     TurnEvent::ToolEnd | TurnEvent::ToolError => {
                         st.sessions[i].in_turn = true;
                         if let Some(id) = call {
@@ -1391,5 +1494,47 @@ mod tests {
         assert_eq!(st.sessions.len(), 1);
         assert_eq!(st.sessions[0].cwd, "/work/repo");
         assert_eq!(st.sessions[0].harness, Harness::Claude);
+    }
+
+    #[test]
+    fn the_interrupt_marker_is_found_only_as_the_last_message() {
+        let user = |t: &str| format!(r#"{{"type":"user","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#);
+        let assistant = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#;
+        let meta = r#"{"type":"ai-title","title":"x"}"#;
+        let tool = user("[Request interrupted by user for tool use]");
+        assert!(last_message_interrupted(&format!("{assistant}\n{tool}\n{meta}\n")));
+        assert!(last_message_interrupted(&format!(
+            "{}\n",
+            r#"{"type":"user","message":{"content":"[Request interrupted by user]"}}"#
+        )));
+        assert!(!last_message_interrupted(&format!("{tool}\n{assistant}\n")), "the agent went on after it");
+        assert!(!last_message_interrupted(&format!("{}\n", user("run the tests"))));
+        assert!(!last_message_interrupted("not json\n"));
+    }
+
+    #[tokio::test]
+    async fn a_parked_waiter_wakes_the_session_after_an_interrupt() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let o = talking_to(&d, "esc", 920).await;
+        let waiter = {
+            let (d, o) = (d.clone(), o.clone());
+            tokio::spawn(
+                async move { d.handle(Request::Wait { origin: o, timeout_ms: 5_000, holds_turn: false }).await },
+            )
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let ev = |event| Request::Event { origin: o.clone(), event, tool: None, detail: None, call: None };
+        d.handle(ev(TurnEvent::TurnStart)).await;
+        d.handle(Request::Hear { text: "and the docs".into(), heard: None }).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "a waiter is parked while the turn runs");
+        assert_eq!(d.state.lock().await.sessions[0].pending.len(), 1, "the tool hooks get it");
+        d.handle(ev(TurnEvent::Interrupted)).await;
+        match tokio::time::timeout(Duration::from_secs(1), waiter).await {
+            Ok(Ok(Response::Utterances { items, superseded: false })) => {
+                assert!(items[0].text.ends_with("and the docs"))
+            }
+            r => panic!("{r:?}"),
+        }
     }
 }

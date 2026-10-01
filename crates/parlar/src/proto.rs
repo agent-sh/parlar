@@ -47,6 +47,8 @@ pub enum TurnEvent {
     ToolStart,
     ToolEnd,
     ToolError,
+    /// The user interrupted the turn (Codex's Interrupt hook). The turn is over.
+    Interrupted,
 }
 
 /// Where a request comes from. The harness session id is known to hooks, the harness process
@@ -72,6 +74,10 @@ pub struct Origin {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<Harness>,
+    /// The session's transcript file, from hooks; parlard reads it to notice an interrupted turn
+    /// (Claude Code runs no hook on Escape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
