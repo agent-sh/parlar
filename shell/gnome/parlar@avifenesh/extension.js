@@ -1,5 +1,5 @@
 // parlar indicator: the swarm, floating above every window. Click to stop or start the
-// conversation, hover for the mute button, right-click for devices.
+// conversation, hover for the mute button, right-click for devices and to close the indicator.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -55,7 +55,8 @@ function savePosition(x, y) {
 }
 
 class Indicator {
-    constructor() {
+    constructor(uuid) {
+        this._uuid = uuid;
         this._phase = 'connecting';
         this._muted = false;
         this._voiceOff = false;
@@ -335,6 +336,8 @@ class Indicator {
         this._menu.removeAll();
         if (!this._connected) {
             this._menu.addMenuItem(new PopupMenu.PopupMenuItem('parlard is not running', {reactive: false}));
+            this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._addClose();
             return;
         }
         let devs = {inputs: [], outputs: []};
@@ -381,6 +384,16 @@ class Indicator {
         const stop = new PopupMenu.PopupMenuItem(stopped ? 'Start conversation' : 'Stop conversation');
         stop.connect('activate', () => this._send({op: 'set', active: stopped}));
         this._menu.addMenuItem(stop);
+        this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._addClose();
+    }
+
+    // Close = disable the extension, so it stays away until `gnome-extensions enable` or the
+    // Extensions app brings it back. The conversation itself is not touched.
+    _addClose() {
+        const close = new PopupMenu.PopupMenuItem('Close indicator');
+        close.connect('activate', () => Main.extensionManager.disableExtension(this._uuid));
+        this._menu.addMenuItem(close);
     }
 }
 
@@ -390,7 +403,7 @@ function now() {
 
 export default class ParlarExtension extends Extension {
     enable() {
-        this._indicator = new Indicator();
+        this._indicator = new Indicator(this.uuid);
     }
 
     disable() {
