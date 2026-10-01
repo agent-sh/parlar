@@ -7,7 +7,7 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root { --w: 960px; --h: 540px; }
+  :root { --w: 960px; --h: 540px; --orange: #d77757; }
   html, body { margin: 0; background: #0b0d12; }
   #stage {
     position: relative; width: var(--w); height: var(--h); overflow: hidden;
@@ -15,38 +15,43 @@
     font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
   }
   .term {
-    position: absolute; left: 36px; top: 34px; width: 700px; height: 472px;
-    background: #14161c; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px #262a35;
+    position: absolute; left: 24px; top: 20px; width: 724px; height: 500px;
+    background: #121317; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px #262a35;
     overflow: hidden;
   }
-  .bar { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #1b1e26; color: #8a90a0; font-size: 12px; }
+  .bar { height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #1b1d23; color: #8a90a0; font-size: 12px; }
   .dot { width: 11px; height: 11px; border-radius: 50%; }
   .bar .title { margin-left: 10px; }
-  .body { padding: 14px 18px; font-size: 13.5px; line-height: 1.55; color: #d7dae2; }
+  /* the session scrolls like a terminal once it fills the window */
+  .body {
+    position: absolute; left: 0; right: 0; top: 28px; bottom: 92px; padding: 0 16px;
+    overflow: hidden;
+    font-size: 12.5px; line-height: 1.5; color: #e4e4e4;
+  }
   .line { white-space: pre; }
-  .dim { color: #6f7685; }
-  .you { color: #8fd8ff; }
-  .agent { color: #ffbf69; }
-  .tool { color: #e7e9ee; }
-  .tool b { color: #b3e88a; font-weight: 600; }
-  .out { color: #8a90a0; }
-  .bad { color: #ff6b5f; }
-  .good { color: #8ee08a; }
-  .add { color: #8ee08a; }
-  .del { color: #ff8a80; }
-  .think { color: #c792ea; }
-  .prompt {
-    position: absolute; left: 18px; right: 18px; bottom: 16px; height: 34px; border: 1px solid #2c313d;
-    border-radius: 8px; color: #6f7685; font-size: 13px; display: flex; align-items: center; padding: 0 12px;
+  .welcome {
+    border: 1px solid var(--orange); border-radius: 6px; padding: 4px 12px; margin: 10px 0 8px; width: 400px;
+    white-space: pre; line-height: 1.5;
   }
-  .status { position: absolute; left: 20px; bottom: 56px; font-size: 12px; color: #6f7685; }
-  #swarm { position: absolute; left: 600px; top: 46px; width: 170px; height: 170px; }
-  .tag {
-    position: absolute; left: 760px; top: 250px; width: 170px; text-align: center; font-size: 12px;
-    color: #8a90a0; letter-spacing: .04em;
+  .orange { color: var(--orange); }
+  .dim { color: #8b8b8b; }
+  .user { color: #9a9a9a; }
+  .user b { color: #e4e4e4; font-weight: 400; }
+  .tagv { color: #6e9fbf; }
+  .ok { color: #4eba65; }
+  .err { color: #ff6b6b; }
+  .tool b { font-weight: 700; color: #e4e4e4; }
+  .del { background: #4a2125; color: #f0c4c4; }
+  .add { background: #1f3d27; color: #c4f0cc; }
+  .spin { position: absolute; left: 16px; bottom: 66px; font-size: 12.5px; color: #8b8b8b; }
+  .input {
+    position: absolute; left: 14px; right: 14px; bottom: 26px; height: 32px; border: 1px solid #4b4b4b;
+    border-radius: 6px; color: #8b8b8b; font-size: 12.5px; display: flex; align-items: center; padding: 0 10px;
   }
+  .hint { position: absolute; left: 18px; bottom: 7px; font-size: 11.5px; color: #6b6b6b; }
+  #swarm { position: absolute; left: 600px; top: 40px; width: 170px; height: 170px; }
   .mic {
-    position: absolute; left: 560px; top: 226px; font-style: italic; width: 250px; text-align: center; font-size: 13px;
+    position: absolute; left: 560px; top: 218px; font-style: italic; width: 250px; text-align: center; font-size: 13px;
     color: #8fd8ff; min-height: 60px; line-height: 1.45; font-family: "Inter", "DejaVu Sans", sans-serif;
   }
 </style>
@@ -59,8 +64,9 @@
       <span class="title">claude · ~/projects/app</span>
     </div>
     <div class="body" id="log"></div>
-    <div class="status" id="status"></div>
-    <div class="prompt">&gt; </div>
+    <div class="spin" id="status"></div>
+    <div class="input">&gt;&nbsp;</div>
+    <div class="hint">? for shortcuts</div>
   </div>
   <canvas id="swarm" width="340" height="340"></canvas>
   <div class="mic" id="mic"></div>
@@ -145,23 +151,34 @@ const MODES = [
 ];
 // [time, html] lines appended to the session as the script reaches them
 const LOG = [
-  [0.0, '<span class="dim">&gt; /parlar:talk</span>'],
-  [0.0, '<span class="agent">parlar: Hi, I\'m listening.</span>'],
-  [3.6, '<span class="you">you: run the tests and fix whatever fails</span>'],
-  [4.4, '<span class="agent">parlar: Running the tests now.</span>'],
-  [5.0, '<span class="tool">⏺ <b>Bash</b>(cargo test)</span>'],
-  [5.6, '<span class="out">  ⎿  running 42 tests</span>'],
-  [6.3, '<span class="out">     test parser::rejects_empty ... </span><span class="bad">FAILED</span>'],
-  [6.6, '<span class="out">     test parser::span_offsets ... </span><span class="bad">FAILED</span>'],
-  [7.0, '<span class="out">     test result: </span><span class="bad">2 failed</span><span class="out">; 40 passed</span>'],
-  [9.6, '<span class="you">you: only the parser ones, skip the slow suite</span>'],
-  [10.4, '<span class="tool">⏺ <b>Update</b>(src/parser.rs)</span>'],
-  [10.8, '<span class="del">  -    assert_eq!(err.to_string(), "empty input");</span>'],
-  [11.0, '<span class="add">  +    assert_eq!(err.to_string(), "input is empty");</span>'],
-  [11.6, '<span class="tool">⏺ <b>Bash</b>(cargo test parser)</span>'],
-  [12.4, '<span class="out">  ⎿  test result: </span><span class="good">ok. 12 passed</span>'],
-  [12.9, '<span class="agent">parlar: Fixed both parser tests. They checked the old error text.</span>'],
-  [13.4, '<span class="agent">        All twelve pass now.</span>'],
+  [0.0, '<div class="welcome"><span class="orange">✻</span> Welcome to <b>Claude Code</b>!\n\n  <span class="dim">/help for help, /status for your current setup</span>\n  <span class="dim">cwd: ~/projects/app</span></div>'],
+  [0.0, '<span class="user">&gt; <b>/parlar:talk</b></span>'],
+  [0.0, ' '],
+  [0.0, '<span class="tool"><span class="ok">⏺</span> <b>parlar - say</b> (MCP)(text: "Hi, I&#39;m listening.")</span>'],
+  [0.0, '<span class="dim">  ⎿  Said.</span>'],
+  [0.0, ' '],
+  [3.6, '<span class="user">&gt; <b>run the tests and fix whatever fails</b>  <span class="tagv">voice</span></span>'],
+  [3.6, ' '],
+  [4.4, '<span class="tool"><span class="ok">⏺</span> <b>parlar - say</b> (MCP)(text: "Running the tests now.")</span>'],
+  [4.5, '<span class="dim">  ⎿  Said.</span>'],
+  [4.9, ' '],
+  [5.0, '<span class="tool"><span class="ok">⏺</span> <b>Bash</b>(cargo test)</span>'],
+  [5.6, '<span class="dim">  ⎿  running 42 tests</span>'],
+  [6.3, '<span class="dim">     test parser::rejects_empty ... </span><span class="err">FAILED</span>'],
+  [6.6, '<span class="dim">     test parser::span_offsets ... </span><span class="err">FAILED</span>'],
+  [7.0, '<span class="dim">     test result: </span><span class="err">FAILED</span><span class="dim">. 40 passed; 2 failed</span>'],
+  [9.6, '<span class="dim">  ⎿  </span><span class="tagv">voice</span><span class="dim">: only the parser ones, skip the slow suite</span>'],
+  [9.6, ' '],
+  [10.4, '<span class="tool"><span class="ok">⏺</span> <b>Update</b>(src/parser.rs)</span>'],
+  [10.6, '<span class="dim">  ⎿  Updated src/parser.rs with 1 addition and 1 removal</span>'],
+  [10.8, '<span class="del">      41 -     assert_eq!(err.to_string(), "empty input");  </span>'],
+  [11.0, '<span class="add">      41 +     assert_eq!(err.to_string(), "input is empty");</span>'],
+  [11.3, ' '],
+  [11.6, '<span class="tool"><span class="ok">⏺</span> <b>Bash</b>(cargo test parser)</span>'],
+  [12.4, '<span class="dim">  ⎿  test result: </span><span class="ok">ok</span><span class="dim">. 12 passed; 0 failed</span>'],
+  [12.6, ' '],
+  [12.9, '<span class="tool"><span class="ok">⏺</span> <b>parlar - say</b> (MCP)(text: "Fixed both parser tests. They checked the old error text.")</span>'],
+  [13.0, '<span class="dim">  ⎿  Said.</span>'],
 ];
 const FLARES = [[6.3, true], [6.6, true], [12.4, false], [12.5, false]];
 const LOOP = 17.0;
@@ -191,7 +208,8 @@ function frame(t) {
     const p = P[(flared * 13 + 5) % N]; p.flare = 1; p.err = FLARES[flared][1]; flared++;
   }
   while (shown < LOG.length && LOG[shown][0] <= t) {
-    const d = document.createElement('div'); d.className = 'line'; d.innerHTML = LOG[shown][1]; log.appendChild(d); shown++;
+    const d = document.createElement('div'); d.className = 'line'; d.innerHTML = LOG[shown][1].replace(/\\n/g, '\n'); log.appendChild(d); shown++;
+    log.scrollTop = log.scrollHeight;
   }
     // what is being said appears word by word while it is heard
   if (seg[2] === 'listening' && seg[3]) {
@@ -203,7 +221,9 @@ function frame(t) {
     mic.textContent = '';
   }
   const working = mode === 'thinking' || (t > 4.4 && t < 12.9 && mode !== 'listening');
-  status.innerHTML = working ? `<span class="think">✻ ${['Working', 'Working.', 'Working..', 'Working...'][Math.floor(t * 3) % 4]}</span>` : '';
+  const verb = t < 7.6 ? 'Running the tests' : t < 12.9 ? 'Fixing the parser tests' : 'Wrapping up';
+  const secs = Math.max(1, Math.floor(t - 3.6));
+  status.innerHTML = working ? `<span class="orange">${'✢✳✶✻✽'[Math.floor(t * 6) % 5]}</span> <span class="orange">${verb}…</span> <span class="dim">(${secs}s · esc to interrupt)</span>` : '';
   draw();
 }
 window.frame = frame;
