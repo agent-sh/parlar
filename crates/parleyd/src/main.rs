@@ -223,6 +223,7 @@ async fn serve(cli: Cli) -> Result<()> {
                     listen::Heard::Level(v) => lvl.store(v.to_bits(), Ordering::Relaxed),
                     listen::Heard::Talking(on) => state.lock().await.set_listening(on),
                     listen::Heard::Partial(text) => {
+                        eprintln!("hearing: {text}");
                         let st = state.lock().await;
                         let _ = st.ui().send(Ui::Caption { who: "user".into(), text });
                     }

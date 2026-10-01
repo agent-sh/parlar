@@ -232,7 +232,6 @@ impl Endpointer {
     /// True when the phrase is complete, has been quiet a moment, and has not been scored yet.
     fn wants_score(&self, now: Instant) -> bool {
         self.score.is_none()
-            && self.complete
             && !self.text.is_empty()
             && self.changed.is_some_and(|c| now.duration_since(c) >= SCORE_AFTER)
     }
@@ -243,10 +242,17 @@ impl Endpointer {
 
     fn release(&mut self, now: Instant) -> Vec<Heard> {
         let Some(changed) = self.changed else { return vec![] };
-        if self.text.is_empty() || !self.complete {
+        if self.text.is_empty() {
             return vec![];
         }
-        if now.duration_since(changed) < hold(&self.text, self.score) {
+        let quiet = now.duration_since(changed);
+        let hold = hold(&self.text, self.score);
+        // background noise can keep the recognizer's voice detector open, so a line whose words
+        // stopped changing counts as finished after a longer wait
+        if !self.complete && quiet < hold + STALE_LINE {
+            return vec![];
+        }
+        if quiet < hold {
             return vec![];
         }
         let heard = std::mem::take(&mut self.text);
@@ -274,6 +280,9 @@ const HOLD_TAIL: &[&str] = &[
     "then", "wait", "if", "that", "is", "maybe", "also", "seems", "think", "want", "need", "it",
     "this", "for", "in", "on", "my", "your", "we", "i", "you", "well", "okay", "ok", "hmm",
 ];
+
+/// Extra wait before an open line whose words stopped changing is treated as finished.
+const STALE_LINE: Duration = Duration::from_millis(1500);
 
 /// Quiet time before the audio model is asked about the phrase.
 const SCORE_AFTER: Duration = Duration::from_millis(200);
@@ -394,6 +403,16 @@ mod tests {
         assert!(ep.tick(t0 + Duration::from_millis(900)).is_empty());
         let ev = ep.tick(t0 + Duration::from_millis(1300));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Open the router file"));
+    }
+
+    #[test]
+    fn open_line_with_settled_words_is_released() {
+        let mut ep = Endpointer::default();
+        let t0 = Instant::now();
+        ep.update(&[line("check the training run", false)], t0, false, "");
+        assert!(ep.tick(t0 + Duration::from_millis(1500)).is_empty());
+        let ev = ep.tick(t0 + Duration::from_millis(2600));
+        assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Check the training run"));
     }
 
     #[test]
