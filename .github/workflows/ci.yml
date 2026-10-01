@@ -72,6 +72,7 @@ jobs:
           path: |
             target/release/parlar.exe
             target/release/parlard.exe
+            target/release/parlar-overlay.exe
             target/release/onnxruntime.dll
             target/release/vcruntime140.dll
             target/release/vcruntime140_1.dll
@@ -245,7 +246,7 @@ jobs:
           if [ "${{ runner.os }}" = Windows ]; then
             # libmoonshine is linked in; ONNX Runtime and the Visual C++ runtime (app-local, as
             # Microsoft allows) ship next to the binaries, so a fresh Windows needs nothing else
-            cp target/release/parlar.exe target/release/parlard.exe target/release/onnxruntime.dll "dist/$name/"
+            cp target/release/parlar.exe target/release/parlard.exe target/release/parlar-overlay.exe target/release/onnxruntime.dll "dist/$name/"
             for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do cp "/c/Windows/System32/$dll" "dist/$name/"; done
           else
             cp target/release/parlar target/release/parlard "dist/$name/"

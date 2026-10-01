@@ -493,6 +493,30 @@ fn service() -> Result<()> {
     let me = format!("PID ne {}", std::process::id());
     let _ = std::process::Command::new("taskkill").args(["/F", "/FI", "IMAGENAME eq parlard.exe", "/FI", &me]).output();
     detach()?;
+    // the floating indicator, when it was installed next to parlard
+    let overlay = exe.with_file_name("parlar-overlay.exe");
+    if overlay.exists() {
+        let ok = std::process::Command::new("reg")
+            .args([
+                "add",
+                key,
+                "/v",
+                "parlar-overlay",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &format!("\"{}\"", overlay.display()),
+                "/f",
+            ])
+            .status()
+            .context("run reg")?
+            .success();
+        if !ok {
+            bail!("could not add parlar-overlay to {key}");
+        }
+        let _ = std::process::Command::new("taskkill").args(["/F", "/IM", "parlar-overlay.exe"]).output();
+        start_detached(&overlay)?;
+    }
     println!("parlard starts at login ({key}\\parlard) and is running; log: {}", log_path().display());
     Ok(())
 }
@@ -505,13 +529,19 @@ fn log_path() -> std::path::PathBuf {
 /// Start this parlard again in the background: no console window, output to the log file.
 #[cfg(windows)]
 fn detach() -> Result<()> {
+    start_detached(&std::env::current_exe()?)
+}
+
+/// Start a program with no console window, its output appended to parlard's log.
+#[cfg(windows)]
+fn start_detached(exe: &std::path::Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     let log = log_path();
     std::fs::create_dir_all(log.parent().unwrap())?;
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
-    std::process::Command::new(std::env::current_exe()?)
+    std::process::Command::new(exe)
         .stdin(std::process::Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out)

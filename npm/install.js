@@ -22,7 +22,8 @@ const TARGETS = {
 // on Windows libmoonshine is linked in, and ONNX Runtime and the Visual C++ runtime ship next to
 // the binaries (a fresh Windows has no VC++ runtime)
 const WINDOWS_RUNTIME = ['onnxruntime.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
-const binaries = process.platform === 'win32' ? ['parlar.exe', 'parlard.exe', ...WINDOWS_RUNTIME] : ['parlar', 'parlard'];
+const binaries =
+  process.platform === 'win32' ? ['parlar.exe', 'parlard.exe', 'parlar-overlay.exe', ...WINDOWS_RUNTIME] : ['parlar', 'parlard'];
 const nativeDir = path.join(__dirname, 'bin', 'native');
 
 function fail(message) {
