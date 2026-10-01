@@ -14,13 +14,20 @@ pub fn socket_path() -> PathBuf {
     if let Some(p) = std::env::var_os("PARLEY_SOCKET") {
         return PathBuf::from(p);
     }
+    // harnesses may start MCP servers with a scrubbed environment, so XDG_RUNTIME_DIR can be
+    // missing even on a systemd desktop; /run/user/<uid> is where it would point
     let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("parley-{}", unsafe_uid())));
+        .or_else(|| {
+            let run = PathBuf::from(format!("/run/user/{}", uid()));
+            run.is_dir().then_some(run)
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("parley-{}", uid())));
     base.join("parley").join("parley.sock")
 }
 
-fn unsafe_uid() -> u32 {
+fn uid() -> u32 {
     // std has no getuid; /proc/self is owned by the caller's uid
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)

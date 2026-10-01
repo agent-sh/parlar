@@ -17,6 +17,7 @@ use crate::voice::Voice;
 struct Waiter {
     id: u64,
     tx: oneshot::Sender<WaitResult>,
+    holds_turn: bool,
 }
 
 enum WaitResult {
@@ -175,6 +176,17 @@ impl State {
     fn supersede(&mut self, i: usize) {
         if let Some(w) = self.sessions[i].waiter.take() {
             let _ = w.tx.send(WaitResult::Superseded);
+        }
+    }
+
+    /// A waiter that holds a turn open may only wait while the conversation is on and its session
+    /// has focus.
+    fn release_held(&mut self) {
+        for i in 0..self.sessions.len() {
+            let talking = self.active && self.focused(i);
+            if !talking && self.sessions[i].waiter.as_ref().is_some_and(|w| w.holds_turn) {
+                self.supersede(i);
+            }
         }
     }
 
@@ -426,7 +438,7 @@ impl Daemon {
                 // a stop takes everything said so far with it, so the reason reads in order
                 Response::Utterances { items: st.take(i), superseded: false }
             }
-            Request::Wait { origin, timeout_ms } => self.wait(origin, timeout_ms).await,
+            Request::Wait { origin, timeout_ms, holds_turn } => self.wait(origin, timeout_ms, holds_turn).await,
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
             Request::Event { origin, event, tool } => {
                 let mut st = self.state.lock().await;
@@ -437,6 +449,7 @@ impl Daemon {
                         // waiter must not wake a busy session
                         st.focus = Some(st.sessions[i].key);
                         st.supersede(i);
+                        st.release_held();
                         st.sessions[i].in_turn = true;
                         st.sessions[i].said = true;
                     }
@@ -524,6 +537,7 @@ impl Daemon {
                         None => return Response::Error { message: format!("no session {f}") },
                     }
                 }
+                st.release_held();
                 st.emit_phase();
                 Response::Ok
             }
@@ -532,7 +546,7 @@ impl Daemon {
         }
     }
 
-    async fn wait(&self, origin: Origin, timeout_ms: u64) -> Response {
+    async fn wait(&self, origin: Origin, timeout_ms: u64, holds_turn: bool) -> Response {
         let (id, rx) = {
             let mut st = self.state.lock().await;
             let Some(i) = st.find_or_attach(&origin) else { return empty() };
@@ -546,7 +560,7 @@ impl Daemon {
             let id = st.next_waiter;
             st.next_waiter += 1;
             let (tx, rx) = oneshot::channel();
-            st.sessions[i].waiter = Some(Waiter { id, tx });
+            st.sessions[i].waiter = Some(Waiter { id, tx, holds_turn });
             (id, rx)
         };
         match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
@@ -702,6 +716,21 @@ mod tests {
         let st = d.state.lock().await;
         assert!(st.sessions.is_empty());
         assert_eq!(st.focus, None);
+    }
+
+    #[tokio::test]
+    async fn turn_holding_waiter_is_released_when_the_conversation_stops() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let on = |a| Request::Set { active: Some(a), mic_muted: None, voice_off: None, focus: None, input: None, output: None };
+        d.handle(on(true)).await;
+        let o = Origin { session: Some("cx".into()), pids: vec![1] };
+        d.handle(Request::Attach { origin: o.clone(), harness: Harness::Codex, cwd: String::new(), mcp: false }).await;
+        let d2 = d.clone();
+        let w = tokio::spawn(async move { d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.handle(on(false)).await;
+        let r = tokio::time::timeout(Duration::from_secs(2), w).await.expect("released").unwrap();
+        assert_eq!(r, Response::Utterances { items: vec![], superseded: true });
     }
 
     #[tokio::test]

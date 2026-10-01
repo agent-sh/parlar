@@ -79,7 +79,14 @@ pub enum Request {
     /// Take pending utterances whose text reads as a stop request, leave the rest.
     ClaimStop { origin: Origin },
     /// Block until an utterance for this session is ready, or until the timeout.
-    Wait { origin: Origin, timeout_ms: u64 },
+    Wait {
+        origin: Origin,
+        timeout_ms: u64,
+        /// The waiter holds the harness turn open (a blocking Stop hook). It is released when the
+        /// conversation stops or focus moves to another session, so the harness never hangs.
+        #[serde(default)]
+        holds_turn: bool,
+    },
     Say {
         origin: Origin,
         text: String,

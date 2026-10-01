@@ -209,10 +209,14 @@ Claude Code statusLine (`refreshInterval: 1`).
 
 ## 9. Session focus
 
-- Every attached session registers with its harness, cwd and session id (SessionStart hook).
-- Focus goes to the most recently started session, changeable from the indicator menu or
-  `parley ctl focus`. Only the focused session gets utterances and may speak. Other sessions'
-  `say` calls queue as text in the indicator.
+- Every attached session registers with its harness, cwd and session id (SessionStart hook, and
+  again on each typed prompt for sessions that started before parleyd).
+- Focus follows typing: the session the user last typed into has voice focus. A new session takes
+  focus only when nobody has it. The indicator menu lists sessions under "Talk to", and
+  `parley ctl focus` sets it directly. Only the focused session gets utterances and is spoken.
+- Sessions whose harness process is gone are pruned every 30 s.
+- If a turn that started from speech ends without any `say`, the opening of the final reply is
+  spoken instead (Haiku 4.5 often skips `say`; Sonnet 5.5 used it in every test).
 
 ## 10. Open items
 
@@ -226,8 +230,9 @@ Claude Code statusLine (`refreshInterval: 1`).
   on a synthetic linear echo path). Not yet measured in a real room on laptop speakers; the text
   echo guard stays as a second line.
 - O7: Codex fresh-session wake: Codex has no asyncRewake, so a new Codex session hears voice only
-  after its first turn. While its blocking Stop hook waits, typed input queues as a steer; Esc
-  ends the wait.
+  after its first turn. Its blocking Stop hook waits only while the conversation is on and that
+  session has focus, and is released the moment either changes (verified live on 0.159). While
+  it waits, typed input queues as a steer; Esc ends the wait.
 - O8: recognition of fillers and repairs depends on the recognizer: "no wait, list" came out as
   "No waitlist" in one test, so the repair cue was lost before cleanup.
 

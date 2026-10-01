@@ -102,7 +102,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             }
         }
         Event::Wait => {
-            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms() }, None)?;
+            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms(), holds_turn: false }, None)?;
             let items = items(r);
             if !items.is_empty() {
                 eprintln!("{}", format::utterances(&items));
@@ -111,7 +111,16 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
         }
         Event::StopWait => {
             c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
-            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms() }, None)?;
+            // this waiter holds the turn open, so it only waits while the conversation is on and
+            // this session is the one being talked to
+            if !talking_to(&mut c, o.session.as_deref())? {
+                let items = items(c.call(&Request::Claim { origin: o }, quick)?);
+                if !items.is_empty() {
+                    print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
+                }
+                return Ok(0);
+            }
+            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms(), holds_turn: true }, None)?;
             let items = items(r);
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
@@ -130,6 +139,14 @@ fn items(r: Response) -> Vec<Utterance> {
 
 fn wait_ms() -> u64 {
     std::env::var("PARLEY_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(23 * 3600 * 1000)
+}
+
+fn talking_to(c: &mut Client, session: Option<&str>) -> Result<bool> {
+    let Some(session) = session else { return Ok(false) };
+    Ok(match c.call(&Request::State, Some(Duration::from_secs(2)))? {
+        Response::State(s) => s.active && s.sessions.iter().any(|x| x.focused && x.session.as_deref() == Some(session)),
+        _ => false,
+    })
 }
 
 fn last_message(input: &Value) -> Option<String> {
