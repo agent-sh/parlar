@@ -533,11 +533,7 @@ pub struct Saved {
 }
 
 fn saved_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|d| !d.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("parlar/devices.json")
+    parlar::dirs::config().join("devices.json")
 }
 
 impl Saved {

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use crate::transport::{Listener, ReadHalf, WriteHalf};
+use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast, oneshot};
 
 use crate::format;
@@ -478,11 +478,7 @@ struct Saved {
 
 impl Saved {
     fn path() -> std::path::PathBuf {
-        let base =
-            std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(
-                || std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"),
-            );
-        base.join("parlar/state.json")
+        crate::dirs::state().join("state.json")
     }
 
     fn load() -> Option<Saved> {
@@ -525,21 +521,7 @@ impl Daemon {
     }
 
     pub async fn serve(self: Arc<Self>, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-            // only lock down a directory that is ours, never a shared one like /tmp
-            if dir.file_name().is_some_and(|n| n == "parlar") {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-            }
-        }
-        if path.exists() {
-            if std::os::unix::net::UnixStream::connect(path).is_ok() {
-                anyhow::bail!("parlard is already running on {}", path.display());
-            }
-            std::fs::remove_file(path)?;
-        }
-        let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+        let listener = Listener::bind(path).await?;
         // removed when serving ends, and only by the daemon that bound it: a second parlard that
         // finds this one running must leave its socket alone
         let _unlink = Unlink(path.to_path_buf());
@@ -559,19 +541,19 @@ impl Daemon {
             }
         });
         loop {
-            let (stream, _) = listener.accept().await?;
+            let (rd, wr) = listener.accept().await?;
             let me = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = me.conn(stream).await {
+                if let Err(e) = me.conn(rd, wr).await {
                     eprintln!("connection: {e:#}");
                 }
             });
         }
     }
 
-    async fn conn(self: Arc<Self>, stream: UnixStream) -> Result<()> {
+    pub async fn conn(self: Arc<Self>, rd: ReadHalf, wr: WriteHalf) -> Result<()> {
         let mut mcp_key = None;
-        let r = self.lines(stream, &mut mcp_key).await;
+        let r = self.lines(rd, wr, &mut mcp_key).await;
         if let Some(key) = mcp_key {
             self.state.lock().await.mcp_gone(key);
         }
@@ -580,8 +562,7 @@ impl Daemon {
 
     /// Serve requests on one connection. An MCP server keeps its connection for its whole life,
     /// so the session it attached is recorded in `mcp_key` and released when the line ends.
-    async fn lines(self: &Arc<Self>, stream: UnixStream, mcp_key: &mut Option<u64>) -> Result<()> {
-        let (rd, mut wr) = stream.into_split();
+    async fn lines(self: &Arc<Self>, rd: ReadHalf, mut wr: WriteHalf, mcp_key: &mut Option<u64>) -> Result<()> {
         let mut lines = BufReader::new(rd).lines();
         while let Some(line) = lines.next_line().await? {
             if line.trim().is_empty() {
@@ -630,7 +611,7 @@ impl Daemon {
         Ok(())
     }
 
-    async fn subscribe(&self, mut wr: tokio::net::unix::OwnedWriteHalf) -> Result<()> {
+    async fn subscribe(&self, mut wr: WriteHalf) -> Result<()> {
         let mut rx = self.ui.subscribe();
         {
             let st = self.state.lock().await;
@@ -994,7 +975,7 @@ fn empty() -> Response {
     Response::Utterances { items: vec![], superseded: false }
 }
 
-async fn write<T: serde::Serialize>(wr: &mut tokio::net::unix::OwnedWriteHalf, v: &T) -> Result<()> {
+async fn write<T: serde::Serialize>(wr: &mut WriteHalf, v: &T) -> Result<()> {
     let mut line = serde_json::to_vec(v)?;
     line.push(b'\n');
     wr.write_all(&line).await?;
@@ -1004,7 +985,7 @@ async fn write<T: serde::Serialize>(wr: &mut tokio::net::unix::OwnedWriteHalf, v
 impl State {
     /// Drop sessions whose harness process is gone without saying goodbye (a crash, a kill).
     fn prune(&mut self) {
-        let alive = |pid: u32| Path::new(&format!("/proc/{pid}")).exists();
+        let alive = crate::client::alive;
         let gone: Vec<usize> =
             (0..self.sessions.len()).rev().filter(|&i| self.sessions[i].pid().is_some_and(|p| !alive(p))).collect();
         for i in gone {
@@ -1132,7 +1113,10 @@ struct Unlink(std::path::PathBuf);
 
 impl Drop for Unlink {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // a named pipe goes away with its last handle; only a unix socket leaves a file
+        if cfg!(unix) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 
@@ -1142,11 +1126,19 @@ mod tests {
     use crate::voice::{Engine, Queue};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    async fn send(
-        w: &mut tokio::net::unix::OwnedWriteHalf,
-        r: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
-        req: &Request,
-    ) -> Response {
+    type TestRead = tokio::io::ReadHalf<tokio::io::DuplexStream>;
+    type TestWrite = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+
+    /// A connection to `d` in memory: the daemon serves one end, the test drives the other.
+    fn connect(d: &Arc<Daemon>) -> (tokio::task::JoinHandle<Result<()>>, TestRead, TestWrite) {
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (brd, bwr) = tokio::io::split(b);
+        let served = tokio::spawn(d.clone().conn(Box::pin(brd), Box::pin(bwr)));
+        let (rd, wr) = tokio::io::split(a);
+        (served, rd, wr)
+    }
+
+    async fn send(w: &mut TestWrite, r: &mut tokio::io::Lines<BufReader<TestRead>>, req: &Request) -> Response {
         let mut v = serde_json::to_vec(req).unwrap();
         v.push(b'\n');
         w.write_all(&v).await.unwrap();
@@ -1156,9 +1148,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_only_session_is_released_with_its_connection() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
-        let (a, b) = UnixStream::pair().unwrap();
-        let served = tokio::spawn(d.clone().conn(b));
-        let (rd, mut wr) = a.into_split();
+        let (served, rd, mut wr) = connect(&d);
         let mut lines = BufReader::new(rd).lines();
         let o = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true, ..Default::default() };
         let r = send(
@@ -1273,9 +1263,7 @@ mod tests {
         };
         d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false })
             .await;
-        let (a, b) = UnixStream::pair().unwrap();
-        let served = tokio::spawn(d.clone().conn(b));
-        let (rd, mut wr) = a.into_split();
+        let (served, rd, mut wr) = connect(&d);
         let mut lines = BufReader::new(rd).lines();
         let mcp = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true, ..Default::default() };
         send(
@@ -1335,9 +1323,7 @@ mod tests {
     async fn a_dead_waiter_does_not_swallow_speech() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let o = talking_to(&d, "s", 500).await;
-        let (a, b) = UnixStream::pair().unwrap();
-        let served = tokio::spawn(d.clone().conn(b));
-        let (_rd, mut wr) = a.into_split();
+        let (served, _rd, mut wr) = connect(&d);
         let mut v = serde_json::to_vec(&Request::Wait {
             origin: o.clone(),
             timeout_ms: 60_000,

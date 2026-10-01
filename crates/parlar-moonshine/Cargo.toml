@@ -1,6 +1,6 @@
 [package]
 name = "parlar-moonshine"
-description = "Run-time loaded bindings to libmoonshine for Kokoro text to speech"
+description = "Bindings to libmoonshine for Kokoro text to speech: loaded at run time, linked on Windows"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -11,6 +11,13 @@ readme = "README.md"
 keywords = ["moonshine", "kokoro", "tts", "ffi"]
 categories = ["api-bindings", "multimedia::audio"]
 
+build = "build.rs"
+
 [dependencies]
 anyhow = "1"
+
+[target.'cfg(not(windows))'.dependencies]
 libloading = "0.9"
+
+[build-dependencies]
+sha2 = "0.10"
