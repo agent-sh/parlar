@@ -2,6 +2,7 @@ mod audio;
 mod listen;
 mod models;
 mod speak;
+mod turn;
 mod vocab;
 mod wav;
 
@@ -74,6 +75,13 @@ enum Cmd {
         #[arg(long)]
         no_partials: bool,
     },
+    /// Score a 16 kHz WAV with the end-of-turn model and dump its features.
+    Turn {
+        wav: std::path::PathBuf,
+        /// Write the features as little-endian f32 here.
+        #[arg(long)]
+        dump: Option<std::path::PathBuf>,
+    },
     /// Synthesize text to a WAV file and report timing.
     Speak {
         text: String,
@@ -89,6 +97,19 @@ fn main() -> Result<()> {
     match cli.cmd {
         Some(Cmd::Fetch { voice }) => return models::fetch(&voice),
         Some(Cmd::Speak { text, out, voice }) => return speak(&text, &out, &voice),
+        Some(Cmd::Turn { wav, dump }) => {
+            let (pcm, rate) = wav::read(&wav)?;
+            let pcm = audio::resample(&pcm, rate, turn::RATE as u32);
+            if let Some(d) = dump {
+                let f = turn::Features::new().compute(&pcm);
+                std::fs::write(d, f.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+            }
+            let mut st = turn::SmartTurn::load(&models::turn_model(), &models::ort_lib())?;
+            let t0 = std::time::Instant::now();
+            let p = st.complete(&pcm)?;
+            println!("prob={p:.4} ({:.0} ms)", t0.elapsed().as_secs_f32() * 1e3);
+            return Ok(());
+        }
         Some(Cmd::Devices) => {
             let (ins, outs) = audio::list()?;
             println!("input:");
@@ -148,8 +169,16 @@ async fn serve(cli: Cli) -> Result<()> {
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let vocab = Arc::new(std::sync::Mutex::new(vocab::Vocab::default()));
+        let turn = match turn::SmartTurn::load(&models::turn_model(), &models::ort_lib()) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("end-of-turn model unavailable, using the word rule only: {e:#}");
+                None
+            }
+        };
         let cfg = listen::Config {
             every_ms: 250,
+            turn,
             partials: !cli.no_partials,
             keyterms: cli.keyterms.clone(),
             vocab: vocab.clone(),

@@ -104,7 +104,12 @@ fn call(daemon: &mut Option<Client>, harness: Harness, msg: &Value) -> Value {
         .get("kind")
         .and_then(|k| serde_json::from_value(k.clone()).ok())
         .unwrap_or_default();
-    let req = Request::Say { origin: origin(None), text: text.to_string(), kind };
+    // Codex sends its session id with every call; Claude Code does not, and is matched by pid
+    let session = ["/params/_meta/sessionId", "/params/_meta/threadId"]
+        .iter()
+        .find_map(|p| msg.pointer(p).and_then(Value::as_str))
+        .map(str::to_string);
+    let req = Request::Say { origin: origin(session), text: text.to_string(), kind };
     // the daemon may have started or restarted since the last call
     for attempt in 0..2 {
         if daemon.is_none() || attempt == 1 {

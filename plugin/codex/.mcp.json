@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "parley": {
+      "command": "./bin/parley",
+      "args": ["mcp", "--harness", "codex"],
+      "cwd": "."
+    }
+  }
+}

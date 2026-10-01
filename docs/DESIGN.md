@@ -1,6 +1,7 @@
 # parley design
 
-Status: draft, 2026-10-01. Working name: parley.
+Status: working end to end on Claude Code (Bedrock), 2026-10-01. Codex plugin written, not yet
+run live. Working name: parley.
 
 Voice conversation mode for coding-agent harnesses (Claude Code, Codex, then Gemini CLI and
 opencode). You talk to a running session and it talks back, while the session stays fully usable
@@ -67,7 +68,8 @@ plugins are stable in 0.159).
 
 asyncRewake was verified live on 2026-10-01: an idle Bedrock session woke 15 s after the turn
 ended, answered the injected utterance, and the hook re-armed on the next Stop. The prompt stayed
-usable while the waiter was pending.
+usable while the waiter was pending. The same waiter also runs on SessionStart, so a fresh
+session wakes on its first utterance without any typing (verified with recorded speech).
 
 Codex: the same hook events exist (`PostToolUse` additionalContext is recorded mid-turn,
 `PreToolUse` deny, `Stop` block with reason, no timeout clamp on Stop). Codex has no asyncRewake,
@@ -123,14 +125,25 @@ say -> text filter -> sentence split -> TTS per sentence -> playback (and AEC fa
 | End of turn | Smart Turn v3.2 (8 MB, BSD-2) | audio based, trained on fillers |
 | TTS | Kokoro-82M (Apache-2.0) | owner choice. sentence streaming |
 
-Runtime: ONNX Runtime through the `ort` crate for every model. Per-model integration details are
-pending the runtime survey (open item O2).
+Runtime: libmoonshine (MIT) runs both the recognizer and Kokoro, with its own MIT G2P, so there
+is no espeak-ng and no GPL in the process. Smart Turn runs through `ort` 2.0.0-rc.10 loaded
+dynamically against the ONNX Runtime 1.23 that libmoonshine ships, so one runtime is loaded.
+VAD is Moonshine's own line segmentation for now; Silero was not needed.
+
+Measured on this rig (Core Ultra 9 275HX), CPU only:
+- Kokoro: first audio 330 to 470 ms, synthesis at 0.36 to 0.53 of real time on 4 cores.
+- Moonshine Small streaming: 0.6 of real time with partials (2 or 4 cores alike), 0.31 without;
+  final text 300 ms after the end with partials, 0.7 to 1.25 s without. Partials are the default.
+- Smart Turn: 37 to 50 ms per decision on 1 thread; features match Hugging Face to 2e-5.
 
 ## 5. Endpointing: thinking pause vs. done
 
 The utterance stays mutable until a hook claims it. Hooks claim late (next tool boundary), so a
 wrong "done" call mid-work costs nothing: a continuation simply merges. Endpointing precision only
 matters when the agent is idle and waiting.
+
+Implemented: 1, 2 and 3 below (word rules win over the audio model, because speech can trail off
+on a falling pitch; Kokoro's "and" scored 0.96 complete). 4 and 5 are not built yet.
 
 Signals, fused into one hold/release decision each frame:
 1. Silence length from VAD.
@@ -204,11 +217,17 @@ Claude Code statusLine (`refreshInterval: 1`).
 
 - O1: Codex idle wake. Blocking Stop hook vs. app-server `thread/queue/add`. Verify whether the
   TUI launched through the `codex` wrapper (bedrock profile) attaches to the shared daemon.
-- O2: model runtime contracts for Moonshine v2 streaming, Kokoro G2P (espeak-ng is GPL, may need a
-  process boundary), Smart Turn features, Silero state.
+- O2: resolved, see section 4.
 - O3: asyncRewake timeout ceiling. The waiter must outlive long idle periods, or re-arm.
 - O4: Esc while a synchronous Stop hook blocks (Codex path).
 - O5: Hebrew. Moonshine v2 has no Hebrew; a second STT engine would be needed.
+- O6: echo cancellation (sonora AEC3) for speakers. Until then an echo guard drops recognized
+  text that matches what the agent is saying; headphones are the reliable setup.
+- O7: Codex fresh-session wake: Codex has no asyncRewake, so a new Codex session hears voice only
+  after its first turn. While its blocking Stop hook waits, typed input queues as a steer; Esc
+  ends the wait.
+- O8: recognition of fillers and repairs depends on the recognizer: "no wait, list" came out as
+  "No waitlist" in one test, so the repair cue was lost before cleanup.
 
 ## 11. Decision log
 
@@ -220,4 +239,9 @@ Claude Code statusLine (`refreshInterval: 1`).
 - D6: GNOME Shell extension for the GNOME indicator, because Mutter does not honor keep-above for
   Wayland clients and has no layer-shell.
 - D7: Rust for the daemon and the hook binary. Hooks run on every tool call, so startup time
-  matters.
+  matters. Hook latency measured under 10 ms with and without a daemon.
+- D8: libmoonshine for both recognition and voice (one dependency, MIT G2P, keyterm biasing).
+- D9: portable build: pinned libmoonshine per target, `$ORIGIN` rpaths, XDG data dirs, a
+  per-user install script. Owner: "it needs to work for Linux users, not solely on this machine".
+- D10: an MCP-only session is released when its connection closes, so a dead MCP server never
+  keeps voice focus.

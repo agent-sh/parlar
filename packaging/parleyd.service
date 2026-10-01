@@ -1,0 +1,12 @@
+[Unit]
+Description=parley voice conversation daemon
+After=pipewire.service
+
+[Service]
+ExecStart=@BINDIR@/parleyd
+Restart=on-failure
+RestartSec=3
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -1,6 +1,5 @@
-// rpath to libmoonshine, whose directory the parley-moonshine build script exports.
+// Find libmoonshine and its ONNX Runtime next to the binary (target dir) or in ../lib/parley
+// (installed layout). parley-moonshine's build script puts them there.
 fn main() {
-    if let Ok(lib) = std::env::var("DEP_MOONSHINE_LIB") {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{lib}");
-    }
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib/parley");
 }
