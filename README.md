@@ -11,6 +11,9 @@
 
 > Running open models for your company? [**Tiyuvta**](https://tiyuvta.ai/services/) helps with model choice, deployment and optimization, and fine-tuning on your hardware or cloud account.
 
+<p align="center"><img src="docs/demo.gif" alt="parlar in a Claude Code session: the user asks out loud to run the tests, the swarm turns blue while they talk, the agent runs them, the user steers mid-task, and the agent answers out loud in amber" width="960"></p>
+<p align="center"><sub>A staged demo (<a href="design/demo.html">design/demo.html</a>): the session and the swarm are drawn from a script, not captured.</sub></p>
+
 parlar is a voice conversation mode for Claude Code and Codex. You speak, and the session hears you
 whether it is idle or in the middle of work. It answers out loud in short sentences, while tool
 calls, diffs and logs stay in the terminal as usual. The spoken exchange is printed in the session,
