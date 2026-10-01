@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "parlar": {
+      "command": "./bin/parlar",
+      "args": [
+        "mcp",
+        "--harness",
+        "codex"
+      ],
+      "cwd": ".",
+      "default_tools_approval_mode": "approve",
+      "env_vars": [
+        "XDG_RUNTIME_DIR"
+      ]
+    }
+  }
+}

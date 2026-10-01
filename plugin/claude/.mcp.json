@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "parlar": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar",
+      "args": ["mcp", "--harness", "claude"]
+    }
+  }
+}

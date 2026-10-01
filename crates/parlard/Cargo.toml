@@ -1,0 +1,30 @@
+[package]
+name = "parlard"
+description = "parlar daemon: audio in and out, speech models, conversation state"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+keywords = ["voice", "speech-recognition", "tts", "vad", "agent"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+cpal = { version = "0.18", features = ["pipewire"] }
+crc32c = "0.6"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"] }
+parlar = { path = "../parlar", version = "0.1.0" }
+parlar-moonshine = { path = "../parlar-moonshine", version = "0.1.0" }
+realfft = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sonora = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
