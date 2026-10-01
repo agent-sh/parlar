@@ -76,7 +76,7 @@ impl Echo {
 }
 
 /// How long the conversation may be stopped before the speech models are unloaded.
-const UNLOAD_AFTER: Duration = Duration::from_secs(120);
+pub const UNLOAD_AFTER: Duration = Duration::from_secs(120);
 
 /// The models the listener loads while a conversation is on.
 struct Models {
@@ -137,6 +137,7 @@ pub fn spawn(frames: Frames, mut cfg: Config, agent_speaking: Arc<AtomicBool>, e
             match run(&mut m, &frames, &mut cfg, &agent_speaking, &echo, &tx) {
                 Ok(Exit::Idle) => {
                     drop(m);
+                    crate::models::release_memory();
                     eprintln!("conversation stopped for {} s; speech models unloaded", UNLOAD_AFTER.as_secs());
                 }
                 Ok(Exit::Ended) => break anyhow!("mic audio ended"),
@@ -160,8 +161,20 @@ const PAUSE: Duration = Duration::from_millis(300);
 /// Speech probability that counts as voice.
 const VOICED: f32 = 0.5;
 
-fn line(text: String, complete: bool) -> parlar_moonshine::Line {
-    parlar_moonshine::Line { id: 0, text, start: 0.0, duration: 0.0, complete, text_changed: true, latency_ms: 0 }
+/// One stretch of the user's speech, as the endpointer sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Line {
+    pub id: u64,
+    pub text: String,
+    pub start: f32,
+    pub duration: f32,
+    pub complete: bool,
+    pub text_changed: bool,
+    pub latency_ms: u32,
+}
+
+fn line(text: String, complete: bool) -> Line {
+    Line { id: 0, text, start: 0.0, duration: 0.0, complete, text_changed: true, latency_ms: 0 }
 }
 
 /// The voice detector marks speech and pauses; the recognizer runs only at a pause, on the turn
@@ -182,7 +195,7 @@ fn run(
     let mut closed_since: Option<Instant> = None;
     let mut ep = Endpointer::default();
     // one line per turn, in the shape the endpointer reads
-    let mut lines: Vec<parlar_moonshine::Line> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
     let mut vocab = Vocab::default();
     let mut vocab_seen: Option<u64> = None;
     let mut last_level = Instant::now();
@@ -403,7 +416,7 @@ struct Endpointer {
 }
 
 impl Endpointer {
-    fn update(&mut self, lines: &[parlar_moonshine::Line], now: Instant, agent_speaking: bool, echo: &str) -> Vec<Heard> {
+    fn update(&mut self, lines: &[Line], now: Instant, agent_speaking: bool, echo: &str) -> Vec<Heard> {
         let mut out = Vec::new();
         self.seen = lines.len();
         // `echo` is what the agent is saying, or just finished saying: the mic heard the agent,
@@ -613,8 +626,8 @@ fn is_echo(heard: &str, said: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn line(text: &str, complete: bool) -> parlar_moonshine::Line {
-        parlar_moonshine::Line {
+    fn line(text: &str, complete: bool) -> Line {
+        Line {
             id: 0,
             text: text.into(),
             start: 0.0,
@@ -743,7 +756,7 @@ mod release_tests {
 
     #[test]
     fn turn_after_clock_release_is_not_lost() {
-        let l = |t: &str, c| parlar_moonshine::Line { id: 0, text: t.into(), start: 0.0, duration: 0.0, complete: c, text_changed: true, latency_ms: 0 };
+        let l = |t: &str, c| Line { id: 0, text: t.into(), start: 0.0, duration: 0.0, complete: c, text_changed: true, latency_ms: 0 };
         let mut ep = Endpointer::default();
         let t0 = Instant::now();
         ep.update(&[l("first thing", true)], t0, false, "");

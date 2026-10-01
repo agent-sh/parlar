@@ -1,22 +1,31 @@
 //! Kokoro through libmoonshine, one synthesis call per sentence, played through the speaker
 //! buffer. Barge-in clears the buffer at once, so audio can be synthesized well ahead.
+//!
+//! The voice model loads when a conversation starts (or on the first line) and unloads once the
+//! conversation has been off and silent for `UNLOAD_AFTER`, like the listener's models.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
 
 use parlar::voice::Speaker;
 use parlar_moonshine::Tts;
 
 use crate::audio::Player;
-use crate::listen::Echo;
+use crate::listen::{Echo, UNLOAD_AFTER};
+use crate::models;
 
 /// A speaker that has not asked for audio this long is stuck (suspended, gone); the line is
 /// given up so the queue moves on.
 const STALL: Duration = Duration::from_secs(2);
 
 pub struct Kokoro {
-    tts: Mutex<Tts>,
+    tts: Mutex<Option<Tts>>,
+    voice: String,
+    /// When a line last finished.
+    last: Mutex<Instant>,
     player: Arc<Player>,
     /// Raised while a line is playing, for the listener's barge-in check.
     pub playing: Arc<AtomicBool>,
@@ -25,12 +34,73 @@ pub struct Kokoro {
 }
 
 impl Kokoro {
-    pub fn new(tts: Tts, player: Arc<Player>) -> Self {
-        Kokoro { tts: Mutex::new(tts), player, playing: Arc::default(), echo: Echo::default() }
+    /// `active` is raised while a conversation is on.
+    pub fn new(voice: &str, player: Arc<Player>, active: Arc<AtomicBool>) -> Arc<Self> {
+        let k = Arc::new(Kokoro {
+            tts: Mutex::new(None),
+            voice: voice.into(),
+            last: Mutex::new(Instant::now()),
+            player,
+            playing: Arc::default(),
+            echo: Echo::default(),
+        });
+        let weak = Arc::downgrade(&k);
+        let life = move || {
+            let (mut off_since, mut failed) = (None::<Instant>, false);
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                let Some(k) = weak.upgrade() else { return };
+                if active.load(Ordering::SeqCst) {
+                    off_since = None;
+                    match k.ready() {
+                        Ok(_) => failed = false,
+                        Err(e) if !failed => {
+                            eprintln!("voice: {e:#}");
+                            failed = true;
+                        }
+                        Err(_) => {}
+                    }
+                    continue;
+                }
+                let off = off_since.get_or_insert_with(Instant::now).elapsed();
+                if off > UNLOAD_AFTER && k.last.lock().unwrap().elapsed() > UNLOAD_AFTER {
+                    // a line being spoken holds the lock; try again on the next tick
+                    if let Ok(mut t) = k.tts.try_lock()
+                        && t.take().is_some()
+                    {
+                        models::release_memory();
+                        eprintln!("conversation stopped for {} s; voice unloaded", UNLOAD_AFTER.as_secs());
+                    }
+                }
+            }
+        };
+        std::thread::Builder::new().name("voice-life".into()).spawn(life).expect("spawn voice thread");
+        k
+    }
+
+    /// The synthesizer, loaded if it is not.
+    fn ready(&self) -> Result<MutexGuard<'_, Option<Tts>>> {
+        let mut t = self.tts.lock().unwrap();
+        if t.is_none() {
+            let t0 = Instant::now();
+            models::moonshine()?;
+            *t = Some(Tts::load(&models::tts_dir(), "en_us", &self.voice, &[])?);
+            eprintln!("voice loaded in {:.0} ms", t0.elapsed().as_secs_f32() * 1e3);
+        }
+        Ok(t)
     }
 }
 
 struct Playing<'a>(&'a Kokoro);
+
+/// Stamps the end of a line, for the unload timer.
+struct Done<'a>(&'a Kokoro);
+
+impl Drop for Done<'_> {
+    fn drop(&mut self) {
+        *self.0.last.lock().unwrap() = Instant::now();
+    }
+}
 
 impl Drop for Playing<'_> {
     fn drop(&mut self) {
@@ -42,14 +112,22 @@ impl Drop for Playing<'_> {
 
 impl Speaker for Kokoro {
     fn speak(&self, text: &str, cancel: &AtomicBool) -> Option<String> {
-        let tts = self.tts.lock().unwrap();
+        let guard = match self.ready() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("voice: {e:#}; line not spoken");
+                return None;
+            }
+        };
+        let tts = guard.as_ref().expect("loaded by ready");
+        let _done = Done(self);
         self.echo.start(text);
         self.playing.store(true, Ordering::SeqCst);
         let _playing = Playing(self);
         let sentences = parlar_moonshine::split_utterances("en_us", text).unwrap_or_else(|_| vec![text.to_string()]);
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel::<(String, Vec<f32>, u32)>();
-        let (tts_ref, sentences_ref, stop_ref) = (&*tts, &sentences, &stop);
+        let (tts_ref, sentences_ref, stop_ref) = (tts, &sentences, &stop);
         std::thread::scope(|scope| {
             // whole sentences, synthesized ahead on their own thread: one call per sentence has no
             // seams inside it, and the speaker never waits on the synthesizer mid-sentence. The

@@ -1,13 +1,14 @@
 #!/bin/sh
-# Install parlar for the current user: binaries, libraries, models, harness plugins, the GNOME
+# Install parlar for the current user: binaries, libmoonshine, models, harness plugins, the GNOME
 # indicator and a systemd user service. Nothing here needs root.
 #
 #   scripts/install.sh            build, install, fetch models, enable the service
 #   PREFIX=/opt/parlar scripts/install.sh
 #   scripts/install.sh --no-service
 #
-# Build needs: cargo, a C toolchain, curl, and on Linux the PipeWire headers
-# (Debian/Ubuntu: libpipewire-0.3-dev, Fedora: pipewire-devel, Arch: pipewire).
+# Build needs: cargo, a C toolchain, clang, and the PipeWire and ALSA headers
+# (Debian/Ubuntu: libpipewire-0.3-dev libasound2-dev, Fedora: pipewire-devel alsa-lib-devel,
+# Arch: pipewire alsa-lib). Fetching needs curl and tar.
 set -eu
 
 SERVICE=1
@@ -23,19 +24,16 @@ PREFIX=${PREFIX:-$HOME/.local}
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}
 CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
 BIN=$PREFIX/bin
-LIB=$PREFIX/lib/parlar
 MARKET=$DATA/parlar/marketplace
 
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 T=$ROOT/target/release
 
-install -d "$BIN" "$LIB"
+install -d "$BIN"
 install -m 755 "$T/parlar" "$T/parlard" "$BIN/"
-# parlard finds these through its $ORIGIN/../lib/parlar rpath
-install -m 644 "$T/libmoonshine.so" "$T/libonnxruntime.so.1" "$LIB/"
 
 # plugins: a local marketplace per harness. Harnesses copy a plugin into their own cache and drop
-# symlinks on the way, so bin/parlar is a real copy (the CLI does not link libmoonshine).
+# symlinks on the way, so bin/parlar is a real copy.
 plugin() {
     harness=$1 dst=$2
     rm -rf "$dst"
@@ -63,6 +61,7 @@ cat > "$MARKET/codex/.agents/plugins/marketplace.json" <<JSON
 }
 JSON
 
+# libmoonshine (pinned, sha256 checked) and the models, into $DATA/parlar
 "$BIN/parlard" fetch
 
 if command -v gnome-shell >/dev/null 2>&1; then
@@ -77,7 +76,9 @@ if [ "$SERVICE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
     mkdir -p "$(dirname "$UNIT")"
     sed "s|@BINDIR@|$BIN|" "$ROOT/packaging/parlard.service" > "$UNIT"
     systemctl --user daemon-reload
-    systemctl --user enable --now parlard.service
+    systemctl --user enable parlard.service
+    # restart, so a reinstall runs the new binary
+    systemctl --user restart parlard.service
 fi
 
 cat <<MSG

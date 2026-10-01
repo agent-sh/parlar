@@ -248,8 +248,8 @@ Claude Code statusLine (`refreshInterval: 1`).
 - D7: Rust for the daemon and the hook binary. Hooks run on every tool call, so startup time
   matters. Hook latency measured under 10 ms with and without a daemon.
 - D8: libmoonshine for both recognition and voice (one dependency, MIT G2P, keyterm biasing).
-- D9: portable build: pinned libmoonshine per target, `$ORIGIN` rpaths, XDG data dirs, a
-  per-user install script. Owner: "it needs to work for Linux users, not solely on this machine".
+- D9: portable build: pinned libmoonshine per target, loaded at run time from the XDG data dir
+  (so `cargo install` works), a per-user install script. Owner: "it needs to work for Linux users, not solely on this machine".
 - D10: an MCP-only session is released when its connection closes, so a dead MCP server never
   keeps voice focus.
 - D11 (2026-10-01): Moonshine v2 Small failed on the owner's real speech. Recognition is now
@@ -259,7 +259,8 @@ Claude Code statusLine (`refreshInterval: 1`).
 - D12: no streaming recognizer. Silero VAD marks pauses and the recognizer runs on the turn so far
   at each pause, so nothing transcribes while nobody talks. The streaming one burned about five
   cores on room noise.
-- D13: models load only during a conversation and unload two minutes after it stops; the owner's
+- D13: models and the voice load only during a conversation and unload two minutes after it
+  stops (idle parlard is about 20 MB); the owner's
   bar is that a normal machine must not feel parlar.
 - D14: one synthesis call per sentence with pauses capped at 250 ms; streamed chunks left holes of
   up to 0.7 s that the owner heard as the voice breaking up.

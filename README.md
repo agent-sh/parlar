@@ -36,8 +36,9 @@ changes your system.
 
 ### From source
 
-Needs cargo ([rustup.rs](https://rustup.rs)), git, curl and the PipeWire headers
-(Debian/Ubuntu `libpipewire-0.3-dev`, Fedora `pipewire-devel`, Arch `pipewire`).
+Needs cargo ([rustup.rs](https://rustup.rs)), git, curl, clang and the PipeWire and ALSA headers
+(Debian/Ubuntu `libpipewire-0.3-dev libasound2-dev`, Fedora `pipewire-devel alsa-lib-devel`, Arch
+`pipewire alsa-lib`).
 
 ```
 git clone https://github.com/avifenesh/parlar && cd parlar
@@ -47,10 +48,20 @@ claude plugin install parlar@parlar
 parlar setup claude
 ```
 
-`scripts/install.sh` builds, installs into `~/.local` (set `PREFIX` to change it), downloads the
-speech models (about 800 MB, into `$XDG_DATA_HOME/parlar/models`), installs the GNOME indicator and
+`scripts/install.sh` builds, installs into `~/.local` (set `PREFIX` to change it), downloads
+libmoonshine and the speech models (about 800 MB, into `$XDG_DATA_HOME/parlar`), installs the GNOME indicator and
 starts the `parlard` user service. `--no-service` skips the service. `parlar setup claude` lets the
 agent speak without a permission prompt on every line.
+
+### From crates.io
+
+```
+cargo install parlar parlard
+parlard fetch
+```
+
+Then add the plugin from Claude Code as above and keep `parlard` running (a user unit is in
+`packaging/parlard.service`). The GNOME indicator is in the repo under `shell/gnome`.
 
 On GNOME the indicator appears after your next login (GNOME on Wayland loads new extensions at
 login).
@@ -126,8 +137,8 @@ While the conversation is stopped the mic is closed. Design notes and decisions 
   (`heard u3 -> /path/to/session`) and what it says.
 - Nothing is heard: check `parlar ctl state` (is it on, is a session focused), then the mic with
   `parlar ctl devices`. A Bluetooth headset in A2DP mode has no mic.
-- Memory: while a conversation is on, parlard holds about 1.4 GB, mostly the recognizer; two minutes
-  after you stop it unloads the models.
+- Memory: parlard idles at about 20 MB. While a conversation is on it holds about 1.4 GB, mostly
+  the recognizer; two minutes after you stop it unloads the models and the voice.
 - Your words go to the wrong session: run `/parlar:talk` in the session you want.
 - `parlard fetch` downloads missing models again; `parlard speak "hello"` writes a test line to
   `parlar-speak.wav`; `parlard final file.wav` runs a recording through the recognizer.
@@ -137,7 +148,7 @@ While the conversation is stopped the mic is closed. Design notes and decisions 
 ```
 systemctl --user disable --now parlard
 claude plugin uninstall parlar@parlar
-rm -rf ~/.local/bin/parlar ~/.local/bin/parlard ~/.local/lib/parlar ~/.local/share/parlar \
+rm -rf ~/.local/bin/parlar ~/.local/bin/parlard ~/.local/share/parlar \
        ~/.config/parlar ~/.config/systemd/user/parlard.service \
        ~/.local/share/gnome-shell/extensions/parlar@avifenesh
 ```

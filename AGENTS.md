@@ -11,9 +11,10 @@ Indicator mockups: `design/indicator-lab.html` (the swarm is the chosen visual).
   Models load when a conversation starts and unload two minutes after it stops. Debug subcommands:
   `speak`, `final`, `turn`, `clean`, `devices`, `fetch`. The Phonon-2 export lives in its own repo
   (`~/projects/phonon2-onnx`, published as tiyuvta/Phonon-2-ONNX).
-- `crates/parlar-moonshine`: bindings to libmoonshine. Its build script fetches the pinned
-  release (sha256 checked) unless `PARLAR_MOONSHINE_DIR` is set, and copies the libraries next
-  to the binaries.
+- `crates/parlar-moonshine`: bindings to libmoonshine for Kokoro, loaded at run time
+  (libloading). `parlard fetch` downloads the pinned release (sha256 checked) into
+  `$XDG_DATA_HOME/parlar/lib`; `models::lib_dir` also looks next to the binary and in
+  `../lib/parlar` (packages), or takes `PARLAR_LIB_DIR`. Nothing links it, so `cargo install` works.
 - `plugin/claude`, `plugin/codex`: harness plugins. `bin/parlar` is a committed shell launcher
   that runs the installed binary and keeps hooks silent before install; the install script
   replaces it with the real binary in the local marketplace copy. Never symlink it to
@@ -27,8 +28,8 @@ Indicator mockups: `design/indicator-lab.html` (the swarm is the chosen visual).
   milliseconds, and must exit 0 with no output when parlard is not running.
 - The first 512 characters of `format::INSTRUCTIONS` carry the core rule (Codex window); the
   whole text stays under 2048 (Claude Code truncation). A unit test enforces both.
-- No machine-specific paths. Binaries find their libraries through `$ORIGIN` rpaths, data goes
-  under `$XDG_DATA_HOME`, the socket under `$XDG_RUNTIME_DIR`. It must work for any Linux user.
+- No machine-specific paths. libmoonshine and ONNX Runtime are found at run time (see above), data
+  goes under `$XDG_DATA_HOME`, the socket under `$XDG_RUNTIME_DIR`. It must work for any Linux user.
 - No em dashes in docs, comments or commit messages.
 
 ## Checks

@@ -64,23 +64,7 @@ enum Cmd {
     Devices,
     /// Write a WAV through the capture cleanup (noise suppression, gain), for inspection.
     Clean { wav: std::path::PathBuf, out: std::path::PathBuf },
-    /// Stream a WAV file through the recognizer in 100 ms chunks, as live audio would arrive.
-    Transcribe {
-        wav: std::path::PathBuf,
-        /// Comma-separated terms to bias recognition toward.
-        #[arg(long)]
-        keyterms: Option<String>,
-        /// Transcribe every N ms of audio.
-        #[arg(long, default_value_t = 100)]
-        every_ms: usize,
-        /// Only decode lines once they are complete.
-        #[arg(long)]
-        no_partials: bool,
-        /// Run the capture cleanup (noise suppression, gain) first, as the live mic path does.
-        #[arg(long)]
-        clean: bool,
-    },
-    /// Transcribe a WAV with the final-transcript model (Phonon-2 or Parakeet TDT, ONNX).
+    /// Transcribe a WAV with the recognizer (Phonon-2, ONNX).
     Final {
         wav: std::path::PathBuf,
         /// Model directory in the onnx-asr layout.
@@ -160,9 +144,6 @@ fn main() -> Result<()> {
             outs.iter().for_each(|d| println!("  {}  {}", d.name, d.id));
             return Ok(());
         }
-        Some(Cmd::Transcribe { wav, keyterms, every_ms, no_partials, clean }) => {
-            return transcribe(&wav, keyterms.as_deref(), every_ms, no_partials, clean);
-        }
         None => {}
     }
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
@@ -173,6 +154,7 @@ async fn serve(cli: Cli) -> Result<()> {
     use std::sync::atomic::{AtomicU32, Ordering};
     use parlar::proto::Ui;
 
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kokoro = None;
     let engine = if !cli.voice_cmd.is_empty() {
         voice::Engine::Command(cli.voice_cmd.clone())
@@ -186,12 +168,15 @@ async fn serve(cli: Cli) -> Result<()> {
             eprintln!("speaker {out:?}: {e:#}; using the default");
             player.open(None)?;
         }
-        let tts = parlar_moonshine::Tts::load(&models::tts_dir(), "en_us", &cli.voice, &[])?;
-        let k = Arc::new(speak::Kokoro::new(tts, player.clone()));
+        // load the library now, so a missing install shows at start; the voice itself loads with
+        // the first conversation
+        models::moonshine()?;
+        let k = speak::Kokoro::new(&cli.voice, player.clone(), active.clone());
         kokoro = Some((k.clone(), player));
         voice::Engine::Speaker(k)
     };
     let mut d = daemon::Daemon::new(Arc::new(voice::Queue::new(engine)));
+    d.state.lock().await.share_voice_gate(active);
     if std::env::var_os("PARLAR_SOCKET").is_none() && cli.input_wav.is_empty() {
         d.state.lock().await.restore_saved();
     }
@@ -313,6 +298,7 @@ async fn serve(cli: Cli) -> Result<()> {
 fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Result<()> {
     use parlar_moonshine::{Next, Tts};
     use std::time::Instant;
+    models::moonshine()?;
     let t0 = Instant::now();
     let tts = Tts::load(&models::tts_dir(), "en_us", voice, &[])?;
     let load = t0.elapsed();
@@ -364,47 +350,5 @@ fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Res
         rate,
         out.display()
     );
-    Ok(())
-}
-
-fn transcribe(path: &std::path::Path, keyterms: Option<&str>, every_ms: usize, no_partials: bool, clean: bool) -> Result<()> {
-    use parlar_moonshine::{ARCH_SMALL_STREAMING, Transcriber};
-    use std::time::Instant;
-    let (pcm, rate) = wav::read(path)?;
-    let (pcm, rate) = if clean {
-        let x = audio::resample(&pcm, rate, aec::RATE);
-        (aec::Aec::cleanup_only().process(&x), aec::RATE)
-    } else {
-        (pcm, rate)
-    };
-    let t0 = Instant::now();
-    let opts: &[(&str, &str)] = if no_partials { &[("decode_incomplete_lines", "false")] } else { &[] };
-    let t = Transcriber::load(&models::stt_dir(), ARCH_SMALL_STREAMING, opts)?;
-    if let Some(k) = keyterms {
-        t.set_keyterms(k)?;
-    }
-    eprintln!("load {:.0} ms", t0.elapsed().as_secs_f32() * 1e3);
-    let mut s = t.stream()?;
-    s.start()?;
-    let chunk = rate as usize * every_ms / 1000;
-    let (mut busy, mut last) = (0f32, String::new());
-    for (i, c) in pcm.chunks(chunk).enumerate() {
-        s.add_audio(c, rate as i32)?;
-        let t1 = Instant::now();
-        let lines = s.transcribe()?;
-        busy += t1.elapsed().as_secs_f32();
-        let now: String = lines.iter().map(|l| format!("{}{}", l.text, if l.complete { " |" } else { " ..." })).collect::<Vec<_>>().join(" ");
-        if now != last {
-            eprintln!("{:5.1}s  {now}", ((i + 1) * every_ms) as f32 / 1000.0);
-            last = now;
-        }
-    }
-    let t1 = Instant::now();
-    s.stop()?;
-    let lines = s.transcribe()?;
-    let fin = t1.elapsed().as_secs_f32();
-    let audio = pcm.len() as f32 / rate as f32;
-    println!("{}", lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" "));
-    eprintln!("audio {audio:.1} s, streaming compute {busy:.2} s (RTF {:.2}), finalize {:.0} ms", busy / audio, fin * 1e3);
     Ok(())
 }

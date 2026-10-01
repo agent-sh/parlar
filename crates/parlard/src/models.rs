@@ -1,4 +1,4 @@
-//! Model files: where they live and how they are fetched from the Moonshine CDN.
+//! Model files and the libmoonshine runtime: where they live and how they are fetched.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,10 +20,6 @@ fn data_home() -> PathBuf {
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     home.join(".local/share")
-}
-
-pub fn stt_dir() -> PathBuf {
-    root().join("stt/small-streaming-en")
 }
 
 /// The G2P and vocoder root that libmoonshine resolves TTS asset keys against.
@@ -58,20 +54,102 @@ pub fn turn_model() -> PathBuf {
     root().join("turn").join(TURN_FILE)
 }
 
-/// The ONNX Runtime library that ships with libmoonshine, so the end-of-turn model shares the
-/// runtime the recognizer already loaded. Looked up where the rpath looks: next to this binary,
-/// then `../lib/parlar`.
-pub fn ort_lib() -> PathBuf {
-    const NAME: &str = "libonnxruntime.so.1";
-    if let Some(p) = std::env::var_os("PARLAR_ORT_LIB") {
+const MOONSHINE: &str = "libmoonshine.so";
+const ORT: &str = "libonnxruntime.so.1";
+
+/// The pinned libmoonshine release per architecture, with the sha256 of its tarball.
+const MOONSHINE_VERSION: &str = "v0.1.5";
+const MOONSHINE_RELEASES: &[(&str, &str, &str)] = &[
+    ("x86_64", "linux-x86_64", "9c3a87fea93ff2ad957938868f95a0a366dce9ff8ad86bde6cdcf5a4cadb51df"),
+    ("aarch64", "linux-arm64", "1600c80a0806b7a2582307c98e7a56f4072e4b060498b08a0b75eb20af42def2"),
+];
+
+/// Where libmoonshine and its ONNX Runtime are: `$PARLAR_LIB_DIR`, next to this binary,
+/// `../lib/parlar` from it (packages), else `$XDG_DATA_HOME/parlar/lib` (what `fetch` fills).
+pub fn lib_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("PARLAR_LIB_DIR") {
         return PathBuf::from(p);
     }
+    let fetched = data_home().join("parlar/lib");
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    let dir = exe.as_deref().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_default();
-    [dir.join(NAME), dir.join("../lib/parlar").join(NAME)]
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(NAME))
+    let dir = exe.as_deref().and_then(|p| p.parent()).map(PathBuf::from);
+    dir.iter()
+        .flat_map(|d| [d.clone(), d.join("../lib/parlar")])
+        .chain([fetched.clone()])
+        .find(|d| d.join(MOONSHINE).exists())
+        .unwrap_or(fetched)
+}
+
+/// The ONNX Runtime that ships with libmoonshine, so every model shares one runtime.
+pub fn ort_lib() -> PathBuf {
+    match std::env::var_os("PARLAR_ORT_LIB") {
+        Some(p) => PathBuf::from(p),
+        None => lib_dir().join(ORT),
+    }
+}
+
+/// Hand freed model memory back to the system. glibc keeps large freed heaps mapped, so without
+/// this an unloaded model still shows in RSS.
+pub fn release_memory() {
+    #[cfg(target_env = "gnu")]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: no arguments that can be invalid; it only walks the allocator's own arenas
+        unsafe { malloc_trim(0) };
+    }
+}
+
+/// Load libmoonshine for the voice.
+pub fn moonshine() -> Result<()> {
+    let lib = lib_dir().join(MOONSHINE);
+    if !lib.exists() {
+        bail!("{} is missing; run `parlard fetch`", lib.display());
+    }
+    parlar_moonshine::open(&lib)
+}
+
+/// Download the pinned libmoonshine release into `$XDG_DATA_HOME/parlar/lib`, unless one is
+/// already found.
+fn fetch_moonshine() -> Result<()> {
+    if lib_dir().join(MOONSHINE).exists() && lib_dir().join(ORT).exists() {
+        return Ok(());
+    }
+    let arch = std::env::consts::ARCH;
+    let Some((_, platform, sha)) = MOONSHINE_RELEASES.iter().find(|(a, _, _)| *a == arch) else {
+        bail!("no prebuilt libmoonshine for {arch}; put {MOONSHINE} and {ORT} in a directory and set PARLAR_LIB_DIR");
+    };
+    let name = format!("moonshine-voice-{platform}");
+    let dest = data_home().join("parlar/lib");
+    let tmp = dest.join(".fetch");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let tarball = File {
+        sha256: Some((*sha).into()),
+        size: None,
+        ..File::new(
+            &format!("{name}.tar.gz"),
+            &format!("https://github.com/moonshine-ai/moonshine/releases/download/{MOONSHINE_VERSION}/{name}.tar.gz"),
+            0,
+        )
+    };
+    download(&Manifest { groups: vec![Group { files: vec![tarball] }] }, &tmp)?;
+    let ok = Command::new("tar")
+        .arg("xzf")
+        .arg(tmp.join(format!("{name}.tar.gz")))
+        .arg("-C")
+        .arg(&tmp)
+        .status()
+        .context("run tar")?
+        .success();
+    if !ok {
+        bail!("unpack {name}.tar.gz failed");
+    }
+    for lib in [ORT, MOONSHINE] {
+        std::fs::rename(tmp.join(&name).join("lib").join(lib), dest.join(lib)).with_context(|| format!("install {lib}"))?;
+    }
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -171,6 +249,8 @@ const PHONON_FILES: &[(&str, u64, &str)] = &[
 ];
 
 pub fn fetch(voice: &str) -> Result<()> {
+    fetch_moonshine()?;
+    moonshine()?;
     let stt = root().join("stt/phonon-2");
     let files = PHONON_FILES
         .iter()

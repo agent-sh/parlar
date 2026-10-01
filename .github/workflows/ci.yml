@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: PipeWire headers
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pkg-config clang
+      - name: PipeWire and ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libasound2-dev pkg-config clang
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

@@ -93,6 +93,9 @@ pub struct State {
     barge: Arc<AtomicBool>,
     /// Mirrors "mic on" for the capture thread: active and not muted.
     mic_gate: Arc<AtomicBool>,
+    /// Mirrors "voice on" for the speaker, which keeps its model loaded while it is up: active
+    /// and not silenced.
+    voice_gate: Arc<AtomicBool>,
     /// Words of the agent's line that the user talked over, for the next utterance.
     cut: Option<String>,
     /// The last utterance delivered and when, so a quick follow-up is marked as its continuation.
@@ -118,6 +121,7 @@ impl State {
             listening: false,
             barge: Arc::new(AtomicBool::new(false)),
             mic_gate: Arc::new(AtomicBool::new(false)),
+            voice_gate: Arc::new(AtomicBool::new(false)),
             cut: None,
             last_heard: None,
             restore_focus: None,
@@ -728,10 +732,10 @@ impl Daemon {
                 if let Some(m) = mic_muted {
                     st.mic_muted = m;
                 }
-                st.sync_gate();
                 if let Some(v) = voice_off {
                     st.voice_off = v;
                 }
+                st.sync_gate();
                 if let Some(f) = focus {
                     match st.sessions.iter().position(|s| s.session.as_deref() == Some(f.as_str())) {
                         Some(i) => {
@@ -889,8 +893,14 @@ impl State {
     pub fn mic_gate(&self) -> Arc<AtomicBool> {
         self.mic_gate.clone()
     }
+    /// Mirror "voice on" into `gate` from now on.
+    pub fn share_voice_gate(&mut self, gate: Arc<AtomicBool>) {
+        self.voice_gate = gate;
+        self.sync_gate();
+    }
     fn sync_gate(&self) {
         self.mic_gate.store(self.active && !self.mic_muted, Ordering::SeqCst);
+        self.voice_gate.store(self.active && !self.voice_off, Ordering::SeqCst);
     }
     pub fn set_cut(&mut self, cut: String) {
         // nothing was heard yet when the user cut in: there is nothing to report

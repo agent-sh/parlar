@@ -1,14 +1,17 @@
-//! Safe wrappers over the libmoonshine C API (header version 30000): streaming transcription,
-//! streaming Kokoro synthesis, and the model download manifests.
+//! Safe wrappers over the libmoonshine C API (header version 30000): Kokoro synthesis, sentence
+//! splitting and the voice download manifest.
+//!
+//! The library is loaded at run time with [`open`], so nothing links against it and a binary
+//! installed anywhere finds it wherever the caller keeps it.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
 use std::ptr;
+use std::sync::OnceLock;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 pub const HEADER_VERSION: i32 = 30000;
-pub const ARCH_SMALL_STREAMING: u32 = 4;
 
 mod sys {
     use super::*;
@@ -17,50 +20,6 @@ mod sys {
     pub struct Opt {
         pub name: *const c_char,
         pub value: *const c_char,
-    }
-
-    #[repr(C)]
-    pub struct Word {
-        pub text: *const c_char,
-        pub start: f32,
-        pub end: f32,
-        pub confidence: f32,
-    }
-
-    #[repr(C)]
-    pub struct SpeakerSpan {
-        pub start_time: f32,
-        pub duration: f32,
-        pub speaker_id: u64,
-        pub speaker_index: u32,
-        pub start_char: u64,
-        pub end_char: u64,
-    }
-
-    #[repr(C)]
-    pub struct Line {
-        pub text: *const c_char,
-        pub audio_data: *const f32,
-        pub audio_data_count: usize,
-        pub start_time: f32,
-        pub duration: f32,
-        pub id: u64,
-        pub is_complete: i8,
-        pub is_updated: i8,
-        pub is_new: i8,
-        pub has_text_changed: i8,
-        pub have_speakers_changed: i8,
-        pub speaker_spans: *const SpeakerSpan,
-        pub speaker_span_count: u64,
-        pub last_transcription_latency_ms: u32,
-        pub words: *const Word,
-        pub word_count: u64,
-    }
-
-    #[repr(C)]
-    pub struct Transcript {
-        pub lines: *mut Line,
-        pub line_count: u64,
     }
 
     #[repr(C)]
@@ -77,90 +36,67 @@ mod sys {
     pub const TTS_END_OF_STREAM: i32 = 2;
     pub const TTS_CANCELLED: i32 = 3;
 
-    unsafe extern "C" {
-        pub fn moonshine_get_version() -> i32;
-        pub fn moonshine_error_to_string(error: i32) -> *const c_char;
+    type Opts = *const Opt;
 
-        pub fn moonshine_load_transcriber_from_files(
-            path: *const c_char,
-            model_arch: u32,
-            options: *const Opt,
-            options_count: u64,
-            version: i32,
-        ) -> i32;
-        pub fn moonshine_free_transcriber(handle: i32);
-        pub fn moonshine_transcriber_set_keyterms(handle: i32, keyterms: *const c_char) -> i32;
+    macro_rules! api {
+        ($($name:ident: fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
+            pub struct Api {
+                _lib: libloading::Library,
+                $(pub $name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
+            }
 
-        pub fn moonshine_create_stream(handle: i32, flags: u32) -> i32;
-        pub fn moonshine_free_stream(handle: i32, stream: i32) -> i32;
-        pub fn moonshine_start_stream(handle: i32, stream: i32) -> i32;
-        pub fn moonshine_stop_stream(handle: i32, stream: i32) -> i32;
-        pub fn moonshine_transcribe_add_audio_to_stream(
-            handle: i32,
-            stream: i32,
-            audio: *const f32,
-            len: u64,
-            sample_rate: i32,
-            flags: u32,
-        ) -> i32;
-        pub fn moonshine_transcribe_stream(
-            handle: i32,
-            stream: i32,
-            flags: u32,
-            out: *mut *mut Transcript,
-        ) -> i32;
-
-        pub fn moonshine_create_tts_synthesizer_from_files(
-            language: *const c_char,
-            filenames: *const *const c_char,
-            filenames_count: u64,
-            options: *const Opt,
-            options_count: u64,
-            version: i32,
-        ) -> i32;
-        pub fn moonshine_free_tts_synthesizer(handle: i32);
-        pub fn moonshine_text_to_speech(
-            handle: i32,
-            text: *const c_char,
-            options: *const Opt,
-            options_count: u64,
-            out_audio: *mut *mut f32,
-            out_size: *mut u64,
-            out_rate: *mut i32,
-        ) -> i32;
-        pub fn moonshine_tts_split_utterances(
-            language: *const c_char,
-            text: *const c_char,
-            options: *const Opt,
-            options_count: u64,
-            out_units_json: *mut *mut c_char,
-        ) -> i32;
-        pub fn moonshine_free_buffer(ptr: *mut c_void);
-        pub fn moonshine_tts_push_text(handle: i32, text: *const c_char) -> i32;
-        pub fn moonshine_tts_flush(handle: i32) -> i32;
-        pub fn moonshine_tts_end_input(handle: i32) -> i32;
-        pub fn moonshine_tts_cancel(handle: i32) -> i32;
-        pub fn moonshine_tts_next_chunk(handle: i32, flags: u32, out: *mut *const Chunk) -> i32;
-
-        pub fn moonshine_get_stt_dependencies(
-            language: *const c_char,
-            options: *const Opt,
-            options_count: u64,
-            out: *mut *mut c_char,
-        ) -> i32;
-        pub fn moonshine_get_tts_dependencies(
-            languages: *const c_char,
-            options: *const Opt,
-            options_count: u64,
-            out: *mut *mut c_char,
-        ) -> i32;
+            impl Api {
+                pub fn load(path: &Path) -> Result<Api> {
+                    // SAFETY: libmoonshine runs no unsound initializers; the symbols are copied
+                    // out as plain fn pointers and the library lives as long as they do
+                    unsafe {
+                        let lib = libloading::Library::new(path)?;
+                        $(let $name = *lib.get(concat!(stringify!($name), "\0").as_bytes())?;)*
+                        Ok(Api { _lib: lib, $($name,)* })
+                    }
+                }
+            }
+        };
     }
+
+    api! {
+        moonshine_get_version: fn() -> i32;
+        moonshine_error_to_string: fn(i32) -> *const c_char;
+        moonshine_create_tts_synthesizer_from_files: fn(*const c_char, *const *const c_char, u64, Opts, u64, i32) -> i32;
+        moonshine_free_tts_synthesizer: fn(i32);
+        moonshine_text_to_speech: fn(i32, *const c_char, Opts, u64, *mut *mut f32, *mut u64, *mut i32) -> i32;
+        moonshine_tts_split_utterances: fn(*const c_char, *const c_char, Opts, u64, *mut *mut c_char) -> i32;
+        moonshine_free_buffer: fn(*mut c_void);
+        moonshine_tts_push_text: fn(i32, *const c_char) -> i32;
+        moonshine_tts_flush: fn(i32) -> i32;
+        moonshine_tts_end_input: fn(i32) -> i32;
+        moonshine_tts_cancel: fn(i32) -> i32;
+        moonshine_tts_next_chunk: fn(i32, u32, *mut *const Chunk) -> i32;
+        moonshine_get_tts_dependencies: fn(*const c_char, Opts, u64, *mut *mut c_char) -> i32;
+    }
+}
+
+static API: OnceLock<sys::Api> = OnceLock::new();
+
+/// Load libmoonshine from `path` (libmoonshine.so; the ONNX Runtime it needs sits next to it).
+/// Later calls are no-ops.
+pub fn open(path: &Path) -> Result<()> {
+    if API.get().is_some() {
+        return Ok(());
+    }
+    let api = sys::Api::load(path).with_context(|| format!("load {}", path.display()))?;
+    let _ = API.set(api);
+    Ok(())
+}
+
+fn api() -> Result<&'static sys::Api> {
+    API.get().ok_or_else(|| anyhow!("libmoonshine is not loaded"))
 }
 
 fn check(code: i32) -> Result<i32> {
     if code < 0 {
         // SAFETY: returns a pointer to a static string for any code
-        let msg = unsafe { CStr::from_ptr(sys::moonshine_error_to_string(code)) };
+        let msg = unsafe { CStr::from_ptr((api()?.moonshine_error_to_string)(code)) };
         bail!("moonshine error {code}: {}", msg.to_string_lossy());
     }
     Ok(code)
@@ -201,16 +137,14 @@ impl Opts {
     }
 }
 
-pub fn version() -> i32 {
+pub fn version() -> Result<i32> {
     // SAFETY: no arguments, no state
-    unsafe { sys::moonshine_get_version() }
+    Ok(unsafe { (api()?.moonshine_get_version)() })
 }
 
-fn manifest(
-    f: unsafe extern "C" fn(*const c_char, *const sys::Opt, u64, *mut *mut c_char) -> i32,
-    lang: &str,
-    opts: &[(&str, &str)],
-) -> Result<String> {
+/// JSON download manifest for G2P plus a TTS vocoder.
+pub fn tts_manifest(lang: &str, opts: &[(&str, &str)]) -> Result<String> {
+    let f = api()?.moonshine_get_tts_dependencies;
     let lang = CString::new(lang)?;
     let o = Opts::new(opts)?;
     let mut out: *mut c_char = ptr::null_mut();
@@ -233,10 +167,10 @@ pub fn split_utterances(lang: &str, text: &str) -> Result<Vec<String>> {
     let t = CString::new(text)?;
     let mut out: *mut c_char = ptr::null_mut();
     // SAFETY: valid strings; out receives a buffer released with moonshine_free_buffer
-    check(unsafe { sys::moonshine_tts_split_utterances(l.as_ptr(), t.as_ptr(), ptr::null(), 0, &mut out) })?;
+    check(unsafe { (api()?.moonshine_tts_split_utterances)(l.as_ptr(), t.as_ptr(), ptr::null(), 0, &mut out) })?;
     let json = cstr(out);
     // SAFETY: documented to be released with moonshine_free_buffer
-    unsafe { sys::moonshine_free_buffer(out as *mut c_void) };
+    unsafe { (api()?.moonshine_free_buffer)(out as *mut c_void) };
     Ok(parse_string_array(&json))
 }
 
@@ -272,140 +206,6 @@ fn parse_string_array(json: &str) -> Vec<String> {
     out
 }
 
-/// JSON download manifest for a speech-to-text model.
-pub fn stt_manifest(lang: &str, opts: &[(&str, &str)]) -> Result<String> {
-    manifest(sys::moonshine_get_stt_dependencies, lang, opts)
-}
-
-/// JSON download manifest for G2P plus a TTS vocoder.
-pub fn tts_manifest(lang: &str, opts: &[(&str, &str)]) -> Result<String> {
-    manifest(sys::moonshine_get_tts_dependencies, lang, opts)
-}
-
-pub struct Transcriber {
-    h: i32,
-}
-
-// SAFETY: the library serializes calls per handle; we only move handles across threads
-unsafe impl Send for Transcriber {}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Line {
-    pub id: u64,
-    pub text: String,
-    pub start: f32,
-    pub duration: f32,
-    pub complete: bool,
-    pub text_changed: bool,
-    pub latency_ms: u32,
-}
-
-impl Transcriber {
-    pub fn load(dir: &Path, arch: u32, opts: &[(&str, &str)]) -> Result<Transcriber> {
-        let p = CString::new(dir.to_string_lossy().as_bytes())?;
-        let o = Opts::new(opts)?;
-        // SAFETY: valid path and options
-        let h = check(unsafe {
-            sys::moonshine_load_transcriber_from_files(p.as_ptr(), arch, o.ptr(), o.len(), HEADER_VERSION)
-        })?;
-        Ok(Transcriber { h })
-    }
-
-    /// Replace the biasing vocabulary, comma separated. Takes effect mid-stream.
-    pub fn set_keyterms(&self, terms: &str) -> Result<()> {
-        let t = CString::new(terms)?;
-        // SAFETY: valid handle and string
-        check(unsafe { sys::moonshine_transcriber_set_keyterms(self.h, t.as_ptr()) })?;
-        Ok(())
-    }
-
-    pub fn stream(&self) -> Result<Stream<'_>> {
-        // SAFETY: valid handle
-        let s = check(unsafe { sys::moonshine_create_stream(self.h, 0) })?;
-        Ok(Stream { t: self, s })
-    }
-}
-
-impl Drop for Transcriber {
-    fn drop(&mut self) {
-        // SAFETY: handle owned by us, streams borrow us so they are gone
-        unsafe { sys::moonshine_free_transcriber(self.h) }
-    }
-}
-
-pub struct Stream<'a> {
-    t: &'a Transcriber,
-    s: i32,
-}
-
-impl Stream<'_> {
-    pub fn start(&mut self) -> Result<()> {
-        // SAFETY: valid handles
-        check(unsafe { sys::moonshine_start_stream(self.t.h, self.s) })?;
-        Ok(())
-    }
-
-    /// Finalize the current lines.
-    pub fn stop(&mut self) -> Result<()> {
-        // SAFETY: valid handles
-        check(unsafe { sys::moonshine_stop_stream(self.t.h, self.s) })?;
-        Ok(())
-    }
-
-    pub fn add_audio(&mut self, pcm: &[f32], sample_rate: i32) -> Result<()> {
-        // SAFETY: slice is valid for its length
-        check(unsafe {
-            sys::moonshine_transcribe_add_audio_to_stream(
-                self.t.h,
-                self.s,
-                pcm.as_ptr(),
-                pcm.len() as u64,
-                sample_rate,
-                0,
-            )
-        })?;
-        Ok(())
-    }
-
-    /// Transcribe everything added so far. Lines are only ever appended; the last may be
-    /// incomplete.
-    pub fn transcribe(&mut self) -> Result<Vec<Line>> {
-        let mut out: *mut sys::Transcript = ptr::null_mut();
-        // SAFETY: valid handles; the transcript stays valid until the next call on the handle
-        check(unsafe { sys::moonshine_transcribe_stream(self.t.h, self.s, 0, &mut out) })?;
-        if out.is_null() {
-            return Ok(Vec::new());
-        }
-        // SAFETY: out points at a transcript owned by the library
-        let t = unsafe { &*out };
-        let lines = if t.lines.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: line_count lines follow lines
-            unsafe { std::slice::from_raw_parts(t.lines, t.line_count as usize) }
-        };
-        Ok(lines
-            .iter()
-            .map(|l| Line {
-                id: l.id,
-                text: cstr(l.text),
-                start: l.start_time,
-                duration: l.duration,
-                complete: l.is_complete != 0,
-                text_changed: l.has_text_changed != 0,
-                latency_ms: l.last_transcription_latency_ms,
-            })
-            .collect())
-    }
-}
-
-impl Drop for Stream<'_> {
-    fn drop(&mut self) {
-        // SAFETY: stream owned by us
-        unsafe { sys::moonshine_free_stream(self.t.h, self.s) };
-    }
-}
-
 pub struct Tts {
     h: i32,
 }
@@ -430,7 +230,7 @@ impl Tts {
         let o = Opts::new(&pairs)?;
         // SAFETY: valid strings; no explicit file list, assets resolve under g2p_root
         let h = check(unsafe {
-            sys::moonshine_create_tts_synthesizer_from_files(
+            (api()?.moonshine_create_tts_synthesizer_from_files)(
                 l.as_ptr(),
                 ptr::null(),
                 0,
@@ -449,7 +249,7 @@ impl Tts {
         let (mut audio, mut size, mut rate): (*mut f32, u64, i32) = (ptr::null_mut(), 0, 0);
         // SAFETY: valid handle and string; the buffer is malloc'd by the library and freed below
         check(unsafe {
-            sys::moonshine_text_to_speech(self.h, t.as_ptr(), ptr::null(), 0, &mut audio, &mut size, &mut rate)
+            (api()?.moonshine_text_to_speech)(self.h, t.as_ptr(), ptr::null(), 0, &mut audio, &mut size, &mut rate)
         })?;
         if audio.is_null() {
             return Ok((Vec::new(), rate));
@@ -464,33 +264,33 @@ impl Tts {
     pub fn push(&self, text: &str) -> Result<()> {
         let t = CString::new(text)?;
         // SAFETY: valid handle and string
-        check(unsafe { sys::moonshine_tts_push_text(self.h, t.as_ptr()) })?;
+        check(unsafe { (api()?.moonshine_tts_push_text)(self.h, t.as_ptr()) })?;
         Ok(())
     }
 
     pub fn flush(&self) -> Result<()> {
         // SAFETY: valid handle
-        check(unsafe { sys::moonshine_tts_flush(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_flush)(self.h) })?;
         Ok(())
     }
 
     pub fn end_input(&self) -> Result<()> {
         // SAFETY: valid handle
-        check(unsafe { sys::moonshine_tts_end_input(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_end_input)(self.h) })?;
         Ok(())
     }
 
     /// Barge-in: drop the reply in flight.
     pub fn cancel(&self) -> Result<()> {
         // SAFETY: valid handle, safe when idle
-        check(unsafe { sys::moonshine_tts_cancel(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_cancel)(self.h) })?;
         Ok(())
     }
 
     pub fn next(&self) -> Result<Next> {
         let mut out: *const sys::Chunk = ptr::null();
         // SAFETY: valid handle; the chunk is valid until the next call, so we copy it
-        let code = unsafe { sys::moonshine_tts_next_chunk(self.h, 0, &mut out) };
+        let code = unsafe { (api()?.moonshine_tts_next_chunk)(self.h, 0, &mut out) };
         match code {
             0 => {
                 // SAFETY: success guarantees a non-null chunk
@@ -518,7 +318,9 @@ impl Tts {
 
 impl Drop for Tts {
     fn drop(&mut self) {
-        // SAFETY: handle owned by us
-        unsafe { sys::moonshine_free_tts_synthesizer(self.h) }
+        if let Ok(a) = api() {
+            // SAFETY: handle owned by us
+            unsafe { (a.moonshine_free_tts_synthesizer)(self.h) }
+        }
     }
 }

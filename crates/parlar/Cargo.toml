@@ -4,6 +4,12 @@ description = "Voice conversation mode for coding-agent harnesses"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+keywords = ["voice", "mcp", "claude-code", "codex", "agent"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1"
