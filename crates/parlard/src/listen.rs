@@ -226,8 +226,19 @@ fn run(
     loop {
         if cfg.gate.load(Ordering::SeqCst) {
             closed_since = None;
-        } else if closed_since.get_or_insert_with(Instant::now).elapsed() > UNLOAD_AFTER && !in_turn {
-            return Ok(Exit::Idle);
+        } else {
+            // stopped or muted: what was being said is dropped, not finished from the queue
+            if closed_since.is_none() {
+                in_turn = false;
+                paused = false;
+                recent.buf.clear();
+                lines.clear();
+                ep = Endpointer::default();
+                while frames.rx.try_recv().is_ok() {}
+            }
+            if closed_since.get_or_insert_with(Instant::now).elapsed() > UNLOAD_AFTER {
+                return Ok(Exit::Idle);
+            }
         }
         let mut changed = false;
         match frames.rx.recv_timeout(Duration::from_millis(30)) {

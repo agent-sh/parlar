@@ -238,39 +238,70 @@ pub struct Mic {
     gate: Arc<AtomicBool>,
     running: Mutex<Option<Running>>,
     want: Mutex<Option<String>>,
+    /// The device picked last, open or not.
+    chosen: Mutex<Option<String>>,
 }
 
 impl Mic {
     pub fn new(gate: Arc<AtomicBool>) -> (Arc<Mic>, Frames) {
         let (tx, rx) = mpsc::sync_channel(MIC_QUEUE);
-        let m = Arc::new(Mic { tx, gate, running: Mutex::new(None), want: Mutex::new(None) });
+        let m = Arc::new(Mic { tx, gate, running: Mutex::new(None), want: Mutex::new(None), chosen: Mutex::new(None) });
         let weak = Arc::downgrade(&m);
         supervise("mic", &MIC_STALE, move || {
             let m = weak.upgrade()?;
             let want = m.want.lock().unwrap().clone();
             Some(m.open(want.as_deref()).or_else(|_| m.open(None)))
         });
+        // the device stays closed while the conversation is off: the system mic indicator goes
+        // out, and a Bluetooth headset can return to its high-quality playback mode
+        let weak = Arc::downgrade(&m);
+        let mut was = m.gate.load(Ordering::SeqCst);
+        let _ = std::thread::Builder::new().name("parlar-mic-gate".into()).spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+                let Some(m) = weak.upgrade() else { return };
+                let on = m.gate.load(Ordering::SeqCst);
+                if on == was {
+                    continue;
+                }
+                was = on;
+                if on {
+                    let want = m.want.lock().unwrap().clone();
+                    if let Err(e) = m.open(want.as_deref()).or_else(|_| m.open(None)) {
+                        eprintln!("mic: {e:#}");
+                    }
+                } else if m.running.lock().unwrap().take().is_some() {
+                    eprintln!("mic closed");
+                }
+            }
+        });
         (m, Frames { rx, rate: MIC_RATE })
     }
 
     pub fn current(&self) -> Option<String> {
-        self.running.lock().unwrap().as_ref().map(|r| r.id.clone())
+        self.running.lock().unwrap().as_ref().map(|r| r.id.clone()).or_else(|| self.chosen.lock().unwrap().clone())
     }
 
-    /// Open `device` (an id, a name substring, or None for the default), replacing the mic.
+    /// Pick `device` (an id, a name substring, or None for the default), replacing the mic. The
+    /// stream only runs while the conversation is on; otherwise the device is remembered and
+    /// opened when it starts.
     pub fn open(&self, device: Option<&str>) -> Result<()> {
         let host = host();
         let dev = find(&host, device, true)?;
         let id = dev_id(&dev);
+        if device.is_some() || self.want.lock().unwrap().is_none() {
+            *self.want.lock().unwrap() = device.map(str::to_string);
+        }
+        *self.chosen.lock().unwrap() = Some(id.clone());
+        // stop the old stream first so two never feed the recognizer at once
+        self.running.lock().unwrap().take();
+        if !self.gate.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let cfg = dev.default_input_config().context("mic config")?;
         let (rate, ch, fmt) = (cfg.sample_rate(), cfg.channels() as usize, cfg.sample_format());
         eprintln!("mic: {dev} at {rate} Hz, {ch} ch, {fmt:?}");
         let (tx, gate) = (self.tx.clone(), self.gate.clone());
-        if device.is_some() || self.want.lock().unwrap().is_none() {
-            *self.want.lock().unwrap() = device.map(str::to_string);
-        }
-        // stop the old stream first so two never feed the recognizer at once
-        self.running.lock().unwrap().take();
         let running = run_stream("parlar-mic", id, move || {
             let cfg: cpal::StreamConfig = cfg.into();
             match fmt {
