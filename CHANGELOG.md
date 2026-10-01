@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+- Codex: a parlard restart no longer ends a turn held open for voice; the Stop waiter reconnects
+  like the Claude Code one does.
+- Codex: the MCP server no longer reports the plugin's own folder as the session's folder.
+- Codex: the SessionEnd hook timeout is 3 s, the most Codex allows.
+- `parlar ctl hear` gets the same busy answer as speech from the mic.
+
+## [Unreleased]
+
 ### Added
 - Speech that arrives during a long tool call gets an answer from parlar itself, once per call:
   it names the step (from the agent's own description) and says your words go through when the

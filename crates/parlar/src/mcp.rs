@@ -61,7 +61,7 @@ pub fn serve(harness: Harness) -> Result<()> {
 
 fn attach(harness: Harness) -> Option<Client> {
     let mut c = Client::connect()?;
-    let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let cwd = project_dir().unwrap_or_default();
     let req = Request::Attach { origin: mcp_origin(None), harness, cwd, mcp: true };
     c.call(&req, Some(Duration::from_secs(2))).ok()?;
     Some(c)
@@ -146,4 +146,14 @@ fn reply_error(out: &mut impl Write, id: Option<Value>, code: i64, message: &str
     out.write_all(&v)?;
     out.flush()?;
     Ok(())
+}
+
+/// The folder the harness runs in, as the MCP server sees it. Codex starts plugin servers in the
+/// plugin's own root, which says nothing about the project, so a folder holding a plugin manifest
+/// is not reported and the hooks supply the folder instead. The manifest check works whether the
+/// server is the copied binary or the launcher's target elsewhere on the PATH.
+fn project_dir() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let plugin = [".codex-plugin", ".claude-plugin"].iter().any(|m| cwd.join(m).join("plugin.json").is_file());
+    (!plugin).then(|| cwd.display().to_string())
 }
