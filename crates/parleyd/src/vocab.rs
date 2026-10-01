@@ -62,10 +62,6 @@ impl Vocab {
         Vocab { version, terms, files }
     }
 
-    pub fn keyterms(&self) -> String {
-        self.terms.join(",")
-    }
-
     /// "open router dot ts" -> "open router.ts", only for files that exist.
     pub fn join_dots(&self, text: &str) -> String {
         let words: Vec<&str> = text.split_whitespace().collect();

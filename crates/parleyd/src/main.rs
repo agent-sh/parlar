@@ -38,15 +38,9 @@ struct Cli {
     output: Option<String>,
     #[arg(long, default_value = "kokoro_af_heart")]
     voice: String,
-    /// Decode only finished phrases: about half the recognizer cost, slower final text.
-    #[arg(long)]
-    no_partials: bool,
     /// Turn off echo cancellation (use with headphones, or to compare).
     #[arg(long)]
     no_aec: bool,
-    /// Comma-separated words to bias recognition toward.
-    #[arg(long)]
-    keyterms: Option<String>,
     /// Test input: play these WAV files into the listener at real-time pace, in order, with
     /// silence after each, instead of using the mic.
     #[arg(long, num_args = 1..)]
@@ -229,45 +223,12 @@ async fn serve(cli: Cli) -> Result<()> {
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let vocab = Arc::new(std::sync::Mutex::new(vocab::Vocab::default()));
-        let turn = match turn::SmartTurn::load(&models::turn_model(), &models::ort_lib()) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                eprintln!("end-of-turn model unavailable, using the word rule only: {e:#}");
-                None
-            }
-        };
         let aec = match &kokoro {
             Some((_, p)) if !cli.no_aec && cli.input_wav.is_empty() => Some(aec::Aec::new(p.far.clone())),
             // test WAVs go through the same cleanup as the mic, without an echo to cancel
             _ => Some(aec::Aec::cleanup_only()),
         };
-        let vad = match vad::Vad::load(&models::vad_model(), &models::ort_lib()) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                eprintln!("voice detector unavailable, the recognizer runs on all audio: {e:#}");
-                None
-            }
-        };
-        let final_stt = match stt::Tdt::load(&models::final_dir(), &models::ort_lib(), 4) {
-            Ok(m) => {
-                eprintln!("final transcripts: {}", models::final_dir().display());
-                Some(m)
-            }
-            Err(e) => {
-                eprintln!("no final-transcript model, using the streaming text: {e:#}");
-                None
-            }
-        };
-        let cfg = listen::Config {
-            every_ms: 250,
-            final_stt,
-            vad,
-            aec,
-            turn,
-            partials: !cli.no_partials,
-            keyterms: cli.keyterms.clone(),
-            vocab: vocab.clone(),
-        };
+        let cfg = listen::Config { aec, gate: d.state.lock().await.mic_gate(), vocab: vocab.clone() };
         // follow the focused session's repo
         {
             let state = d.state.clone();
