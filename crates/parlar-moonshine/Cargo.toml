@@ -1,6 +1,6 @@
 [package]
 name = "parlar-moonshine"
-description = "Bindings to libmoonshine for Kokoro text to speech: loaded at run time, linked on Windows"
+description = "Bindings to libmoonshine for Kokoro text to speech: loaded at run time on Linux, linked on Windows and macOS"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -16,7 +16,7 @@ build = "build.rs"
 [dependencies]
 anyhow = "1"
 
-[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.9"
 
 [build-dependencies]

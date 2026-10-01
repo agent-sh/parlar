@@ -6,7 +6,7 @@
 #   PREFIX=/opt/parlar scripts/install.sh
 #   scripts/install.sh --no-service
 #
-# Build needs: cargo, a C toolchain, clang, and the PipeWire and ALSA headers
+# Build needs: cargo, a C toolchain, clang, and on Linux the PipeWire and ALSA headers
 # (Debian/Ubuntu: libpipewire-0.3-dev libasound2-dev, Fedora: pipewire-devel alsa-lib-devel,
 # Arch: pipewire alsa-lib). Fetching needs curl and tar.
 set -eu
@@ -30,6 +30,8 @@ T=$ROOT/target/release
 
 install -d "$BIN"
 install -m 755 "$T/parlar" "$T/parlard" "$BIN/"
+# macOS: libmoonshine is linked in and ONNX Runtime sits next to the binaries (or fetch installs it)
+[ -f "$T/libonnxruntime.1.23.0.dylib" ] && install -m 644 "$T/libonnxruntime.1.23.0.dylib" "$BIN/"
 
 # plugins: a local marketplace per harness. Harnesses copy a plugin into their own cache and drop
 # symlinks on the way, so bin/parlar is a real copy.
@@ -70,7 +72,8 @@ if command -v gnome-shell >/dev/null 2>&1; then
     cp -R "$ROOT/shell/gnome/parlar@avifenesh/." "$EXT/"
 fi
 
-if [ "$SERVICE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+# systemd on Linux, launchd on macOS
+if [ "$SERVICE" = 1 ] && { command -v systemctl >/dev/null 2>&1 || command -v launchctl >/dev/null 2>&1; }; then
     "$BIN/parlard" service
 fi
 

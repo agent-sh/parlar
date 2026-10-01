@@ -1,65 +1,147 @@
-// Windows only: libmoonshine's Windows release is a static library, so it is linked here.
+// Windows and macOS: libmoonshine's releases there are static libraries, so they are linked here.
 // The pinned release is downloaded once into the target directory and checked against its
-// sha256, unless PARLAR_MOONSHINE_DIR points at an unpacked one. onnxruntime.dll is copied next
-// to the binaries and delay-loaded, so parlard can also find it in its data folder after
-// `cargo install`. On other platforms there is nothing to build: the library is loaded at run time.
+// sha256, unless PARLAR_MOONSHINE_DIR points at an unpacked one. ONNX Runtime stays a shared
+// library next to the binaries (onnxruntime.dll delay-loaded on Windows, libonnxruntime.dylib
+// found through an rpath on macOS), so parlard can also find it in its data folder after
+// `cargo install`. On Linux there is nothing to build: the library is loaded at run time.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const VERSION: &str = "v0.1.5";
-const WINDOWS_X64: &str = "97c1987e8e1cd77bb5fe3b12ce5aad5172637107e1dfda112ea9b21bac8f4b65";
+/// Per target OS: libmoonshine's tarball name and sha256, and where ONNX Runtime comes from.
+struct Target {
+    moonshine: &'static str,
+    moonshine_sha: &'static str,
+    /// The tarball holding the ONNX Runtime library and its folder inside, when it is not in the
+    /// libmoonshine release.
+    ort: Option<(&'static str, &'static str, &'static str)>,
+}
+
+const WINDOWS_X64: Target = Target {
+    moonshine: "moonshine-voice-windows-x86_64",
+    moonshine_sha: "97c1987e8e1cd77bb5fe3b12ce5aad5172637107e1dfda112ea9b21bac8f4b65",
+    ort: None,
+};
+const MACOS_ARM64: Target = Target {
+    moonshine: "moonshine-voice-macos-arm64",
+    moonshine_sha: "51151f98eb1b20b8fc141bab361a1574dbfdbef8300b632ee6679e373112e0f6",
+    ort: Some((
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz",
+        "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf",
+        "onnxruntime-osx-arm64-1.23.0/lib",
+    )),
+};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=PARLAR_MOONSHINE_DIR");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    if os == "linux" {
         return;
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out
     let profile_dir = out.ancestors().nth(3).expect("OUT_DIR layout").to_path_buf();
-    let dir = match std::env::var_os("PARLAR_MOONSHINE_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => fetch(&profile_dir),
+    let cache = profile_dir.parent().unwrap().join("moonshine").join(VERSION);
+    // a prebuilt release for the target, or the user's own unpacked one
+    let known = match (os.as_str(), arch.as_str()) {
+        ("windows", "x86_64") => Some(WINDOWS_X64),
+        ("macos", "aarch64") => Some(MACOS_ARM64),
+        _ => None,
+    };
+    let dir = match (std::env::var_os("PARLAR_MOONSHINE_DIR"), &known) {
+        (Some(d), _) => PathBuf::from(d),
+        (None, Some(t)) => fetch_moonshine(&cache, t),
+        (None, None) => panic!(
+            "no prebuilt libmoonshine for {os}/{arch}; unpack a moonshine-voice release and set PARLAR_MOONSHINE_DIR"
+        ),
     };
     let lib = dir.join("lib");
     println!("cargo:rustc-link-search=native={}", lib.display());
-    for name in ["moonshine", "moonshine-utils", "bin-tokenizer", "ort-utils"] {
-        println!("cargo:rustc-link-lib=static={name}");
+    if os == "windows" {
+        for name in ["moonshine", "moonshine-utils", "bin-tokenizer", "ort-utils"] {
+            println!("cargo:rustc-link-lib=static={name}");
+        }
+        println!("cargo:rustc-link-lib=dylib=onnxruntime");
+        println!("cargo:rustc-link-arg=/DELAYLOAD:onnxruntime.dll");
+        println!("cargo:rustc-link-lib=delayimp");
+        let _ = std::fs::copy(lib.join("onnxruntime.dll"), profile_dir.join("onnxruntime.dll"));
+    } else {
+        println!("cargo:rustc-link-lib=static=moonshine");
+        println!("cargo:rustc-link-lib=c++");
+        for fw in ["Foundation", "Accelerate"] {
+            println!("cargo:rustc-link-lib=framework={fw}");
+        }
+        // libmoonshine's objects use clang's availability checks (___isPlatformVersionAtLeast),
+        // which live in clang's compiler runtime, not in Rust's
+        if let Some(rt) = clang_rt() {
+            println!("cargo:rustc-link-search=native={}", rt.parent().unwrap().display());
+            println!("cargo:rustc-link-lib=static=clang_rt.osx");
+        }
+        // ONNX Runtime is weakly linked and opened by parlard from its lib folder before the
+        // first call (see models::moonshine), so a binary installed anywhere starts without it
+        if let Some(t) = &known {
+            let ort_dir = fetch_ort(&cache, t);
+            println!("cargo:rustc-link-search=native={}", ort_dir.display());
+            let _ = std::fs::copy(
+                ort_dir.join("libonnxruntime.1.23.0.dylib"),
+                profile_dir.join("libonnxruntime.1.23.0.dylib"),
+            );
+        } else {
+            println!("cargo:rustc-link-search=native={}", lib.display());
+        }
+        println!("cargo:rustc-link-arg=-Wl,-weak-lonnxruntime");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../lib/parlar");
     }
-    println!("cargo:rustc-link-lib=dylib=onnxruntime");
-    println!("cargo:rustc-link-arg=/DELAYLOAD:onnxruntime.dll");
-    println!("cargo:rustc-link-lib=delayimp");
-    let dll = lib.join("onnxruntime.dll");
-    let _ = std::fs::copy(&dll, profile_dir.join("onnxruntime.dll"));
 }
 
-fn fetch(profile_dir: &Path) -> PathBuf {
-    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    assert_eq!(arch, "x86_64", "libmoonshine has a Windows build for x86_64 only; set PARLAR_MOONSHINE_DIR");
-    let name = "moonshine-voice-windows-x86_64";
-    let cache = profile_dir.parent().unwrap().join("moonshine").join(VERSION);
-    let dir = cache.join(name);
-    if dir.join("lib").join("moonshine.lib").exists() {
+/// clang's compiler runtime for macOS, from the toolchain `cc` resolves to.
+fn clang_rt() -> Option<PathBuf> {
+    let out = Command::new("cc").args(["-print-resource-dir"]).output().ok()?;
+    let dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let lib = dir.join("lib/darwin/libclang_rt.osx.a");
+    lib.exists().then_some(lib)
+}
+
+fn fetch_moonshine(cache: &Path, t: &Target) -> PathBuf {
+    let dir = cache.join(t.moonshine);
+    if dir.join("lib").exists() {
         return dir;
     }
-    std::fs::create_dir_all(&cache).unwrap();
-    let tarball = cache.join(format!("{name}.tar.gz"));
-    let url = format!("https://github.com/moonshine-ai/moonshine/releases/download/{VERSION}/{name}.tar.gz");
-    // curl and tar ship with Windows 10 and later
-    run(Command::new("curl").args(["-fsSL", "--retry", "3", "-o"]).arg(&tarball).arg(&url), "download libmoonshine");
+    let url = format!("https://github.com/moonshine-ai/moonshine/releases/download/{VERSION}/{}.tar.gz", t.moonshine);
+    fetch_tarball(cache, &url, t.moonshine_sha);
+    dir
+}
+
+fn fetch_ort(cache: &Path, t: &Target) -> PathBuf {
+    let (url, sha, inner) = t.ort.expect("macOS needs ONNX Runtime from its own release");
+    let dir = cache.join(inner);
+    if dir.exists() {
+        return dir;
+    }
+    fetch_tarball(cache, url, sha);
+    dir
+}
+
+/// Download a tarball into `cache`, check its sha256, and unpack it there.
+fn fetch_tarball(cache: &Path, url: &str, sha: &str) {
+    std::fs::create_dir_all(cache).unwrap();
+    let tarball = cache.join(format!("{}.tar.gz", sha));
+    // curl and tar ship with Windows 10 and later, and with macOS
+    run(Command::new("curl").args(["-fsSL", "--retry", "3", "-o"]).arg(&tarball).arg(url), "download");
     let got = {
         use sha2::Digest;
         format!("{:x}", sha2::Sha256::digest(std::fs::read(&tarball).unwrap()))
     };
-    if got != WINDOWS_X64 {
+    if got != sha {
         let _ = std::fs::remove_file(&tarball);
-        panic!("libmoonshine checksum mismatch for {url}: got {got}");
+        panic!("checksum mismatch for {url}: got {got}");
     }
-    run(Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(&cache), "unpack libmoonshine");
+    run(Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(cache), "unpack");
     let _ = std::fs::remove_file(&tarball);
-    dir
 }
 
 fn run(cmd: &mut Command, what: &str) {

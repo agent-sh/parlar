@@ -112,7 +112,7 @@ pub fn ancestors() -> Vec<u32> {
     out
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // the comm field is parenthesized and may contain spaces; ppid is the second field after it
@@ -124,15 +124,78 @@ fn parent_of(pid: u32) -> Option<u32> {
 const SHELLS: &[&str] =
     &["sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "tcsh", "csh", "busybox", "cmd", "powershell", "pwsh"];
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn comm(pid: u32) -> String {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
 /// Whether a process still runs, for dropping sessions whose harness is gone.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn alive(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// macOS has no /proc: the parent pid and the executable name come from sysctl's kinfo_proc,
+/// and liveness from kill(pid, 0).
+#[cfg(target_os = "macos")]
+fn parent_of(pid: u32) -> Option<u32> {
+    mac::info(pid).map(|(ppid, _)| ppid)
+}
+
+#[cfg(target_os = "macos")]
+fn comm(pid: u32) -> String {
+    mac::info(pid).map(|(_, name)| name).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+pub fn alive(pid: u32) -> bool {
+    mac::alive(pid)
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    unsafe extern "C" {
+        fn sysctl(
+            name: *const i32,
+            namelen: u32,
+            oldp: *mut core::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *const core::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn __error() -> *mut i32;
+    }
+    const CTL_KERN: i32 = 1;
+    const KERN_PROC: i32 = 14;
+    const KERN_PROC_PID: i32 = 1;
+    const ESRCH: i32 = 3;
+    /// Offsets into struct kinfo_proc on 64-bit macOS: p_comm (16 bytes) in extern_proc, and
+    /// e_ppid in eproc. Stable ABI, unchanged since 10.5.
+    const KINFO_SIZE: usize = 648;
+    const P_COMM: usize = 243;
+    const E_PPID: usize = 560;
+
+    /// The parent pid and the executable name (as the kernel keeps it, 16 bytes at most).
+    pub fn info(pid: u32) -> Option<(u32, String)> {
+        let mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid as i32];
+        let mut buf = [0u8; KINFO_SIZE];
+        let mut len = KINFO_SIZE;
+        // SAFETY: a 4-element mib and a buffer with its length; sysctl writes at most len bytes
+        let r = unsafe { sysctl(mib.as_ptr(), 4, buf.as_mut_ptr().cast(), &mut len, std::ptr::null(), 0) };
+        if r != 0 || len < E_PPID + 4 {
+            return None;
+        }
+        let name_end = buf[P_COMM..P_COMM + 16].iter().position(|&c| c == 0).unwrap_or(16);
+        let name = String::from_utf8_lossy(&buf[P_COMM..P_COMM + name_end]).into_owned();
+        let ppid = u32::from_ne_bytes(buf[E_PPID..E_PPID + 4].try_into().ok()?);
+        Some((ppid, name))
+    }
+
+    pub fn alive(pid: u32) -> bool {
+        // SAFETY: signal 0 checks for the process without sending anything
+        unsafe { kill(pid as i32, 0) == 0 || *__error() != ESRCH }
+    }
 }
 
 #[cfg(windows)]

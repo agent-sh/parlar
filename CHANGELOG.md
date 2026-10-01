@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- macOS (Apple silicon), first cut: builds with libmoonshine linked in and ONNX Runtime from
+  Microsoft's release, process lookups through sysctl, a launchd user agent from
+  `parlard service`, release builds and npm. Tested on CI only; the mic, the speaker and the
+  plugin flow on a real Mac are not verified, and there is no floating indicator yet.
+
 ## [0.1.6] - 2026-10-01
 
 ### Added

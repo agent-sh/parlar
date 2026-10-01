@@ -61,7 +61,7 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
 | Indicator | GNOME Shell 50 on Linux; `parlar-overlay` on Windows. Other Linux desktops work without the floating indicator |
-| macOS | not supported |
+| macOS (Apple silicon) | in progress: builds, tests and runs headless on CI; the mic, speaker, launchd start and plugin flow are untested on a real Mac, and there is no floating indicator yet |
 
 ## Install
 
@@ -118,7 +118,9 @@ parlard service    # systemd user service for this parlard
 ```
 
 On Windows, `cargo install` needs the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-installed; `parlard fetch` adds ONNX Runtime.
+installed; `parlard fetch` adds ONNX Runtime. On macOS, `parlard fetch` adds ONNX Runtime and links
+it next to the `parlard` binary (macOS binds it at launch), and `parlard service` installs a launchd
+agent (`~/Library/LaunchAgents/dev.agent-sh.parlard.plist`).
 
 ### Option E: prebuilt binaries
 
