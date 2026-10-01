@@ -12,6 +12,26 @@ use cpal::{SampleFormat, SizedSample};
 use parley::proto::Device;
 
 pub const MIC_RATE: u32 = 16000;
+
+/// Raised by a stream's error callback when its device changed or went away (a Bluetooth
+/// profile switch replaces the device); a supervisor thread then reopens the stream.
+static MIC_STALE: AtomicBool = AtomicBool::new(false);
+static SPEAKER_STALE: AtomicBool = AtomicBool::new(false);
+
+/// Reopen a stream after its device changed, once the devices have settled.
+fn supervise(name: &'static str, stale: &'static AtomicBool, reopen: impl Fn() -> bool + Send + 'static) {
+    let _ = std::thread::Builder::new().name(format!("parley-{name}-watch")).spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if stale.swap(false, Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            stale.store(false, Ordering::SeqCst);
+            eprintln!("{name}: device changed, reopening");
+            if !reopen() {
+                return;
+            }
+        }
+    });
+}
 pub const VOICE_RATE: u32 = 24000;
 
 /// PipeWire when it is running (it lists real nodes, e.g. Bluetooth headsets), else the
@@ -176,12 +196,23 @@ pub struct Mic {
     tx: mpsc::Sender<Vec<f32>>,
     gate: Arc<AtomicBool>,
     running: Mutex<Option<Running>>,
+    want: Mutex<Option<String>>,
 }
 
 impl Mic {
     pub fn new(gate: Arc<AtomicBool>) -> (Arc<Mic>, Frames) {
         let (tx, rx) = mpsc::channel();
-        (Arc::new(Mic { tx, gate, running: Mutex::new(None) }), Frames { rx, rate: MIC_RATE })
+        let m = Arc::new(Mic { tx, gate, running: Mutex::new(None), want: Mutex::new(None) });
+        let weak = Arc::downgrade(&m);
+        supervise("mic", &MIC_STALE, move || {
+            let Some(m) = weak.upgrade() else { return false };
+            let want = m.want.lock().unwrap().clone();
+            if let Err(e) = m.open(want.as_deref()).or_else(|_| m.open(None)) {
+                eprintln!("mic: reopen failed: {e:#}");
+            }
+            true
+        });
+        (m, Frames { rx, rate: MIC_RATE })
     }
 
     pub fn current(&self) -> Option<String> {
@@ -197,6 +228,9 @@ impl Mic {
         let (rate, ch, fmt) = (cfg.sample_rate(), cfg.channels() as usize, cfg.sample_format());
         eprintln!("mic: {dev} at {rate} Hz, {ch} ch, {fmt:?}");
         let (tx, gate) = (self.tx.clone(), self.gate.clone());
+        if device.is_some() || self.want.lock().unwrap().is_none() {
+            *self.want.lock().unwrap() = device.map(str::to_string);
+        }
         // stop the old stream first so two never feed the recognizer at once
         self.running.lock().unwrap().take();
         let stop = run_stream("parley-mic", move || {
@@ -248,7 +282,10 @@ fn input<T: ToF32>(
             rs.process(&mono, &mut out);
             let _ = tx.send(out);
         },
-        |e| eprintln!("mic stream: {e}"),
+        |e| {
+            eprintln!("mic stream: {e}");
+            MIC_STALE.store(true, Ordering::SeqCst);
+        },
         None,
     )?)
 }
@@ -258,18 +295,30 @@ pub struct Player {
     buf: Mutex<VecDeque<f32>>,
     level: AtomicU32,
     running: Mutex<Option<Running>>,
+    want: Mutex<Option<String>>,
     /// What actually reached the speaker, at 16 kHz, for echo cancellation.
     pub far: crate::aec::Far,
 }
 
 impl Player {
     pub fn new() -> Arc<Player> {
-        Arc::new(Player {
+        let p = Arc::new(Player {
             buf: Mutex::new(VecDeque::new()),
             level: AtomicU32::new(0),
             running: Mutex::new(None),
+            want: Mutex::new(None),
             far: crate::aec::Far::default(),
-        })
+        });
+        let weak = Arc::downgrade(&p);
+        supervise("speaker", &SPEAKER_STALE, move || {
+            let Some(p) = weak.upgrade() else { return false };
+            let want = p.want.lock().unwrap().clone();
+            if let Err(e) = p.open(want.as_deref()).or_else(|_| p.open(None)) {
+                eprintln!("speaker: reopen failed: {e:#}");
+            }
+            true
+        });
+        p
     }
     pub fn push(&self, pcm: &[f32], from_rate: u32) {
         let out = resample(pcm, from_rate, VOICE_RATE);
@@ -298,6 +347,9 @@ impl Player {
         let (rate, ch, fmt) = (cfg.sample_rate(), cfg.channels() as usize, cfg.sample_format());
         eprintln!("speaker: {dev} at {rate} Hz, {ch} ch, {fmt:?}");
         let p = self.clone();
+        if device.is_some() || self.want.lock().unwrap().is_none() {
+            *self.want.lock().unwrap() = device.map(str::to_string);
+        }
         self.running.lock().unwrap().take();
         let stop = run_stream("parley-speaker", move || {
             let cfg: cpal::StreamConfig = cfg.into();
@@ -359,7 +411,10 @@ fn output<T: SizedSample + Send + 'static>(
             to_far.process(&played, &mut far);
             p.far.push(&far);
         },
-        |e| eprintln!("speaker stream: {e}"),
+        |e| {
+            eprintln!("speaker stream: {e}");
+            SPEAKER_STALE.store(true, Ordering::SeqCst);
+        },
         None,
     )?)
 }
