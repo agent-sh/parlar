@@ -27,8 +27,8 @@ Part of agent-sh. Design and decisions: `docs/DESIGN.md`. Indicator mockups:
   `target/release/parlar` lets a write through the link overwrite the build (it is a hard link).
 - All message passing goes through the harness plugin. No terminal injection (PTY, tmux
   send-keys) in the product. tmux is allowed only as a test harness.
-- Hooks run on every tool call: `parlar hook` must stay free of an async runtime and return in
-  milliseconds, and must exit 0 with no output when parlard is not running.
+- Hooks run on every tool call: `parlar hook` stays free of an async runtime, returns in
+  milliseconds, and exits 0 with no output when parlard is not running.
 - The first 512 characters of `format::INSTRUCTIONS` carry the core rule (Codex window); the
   whole text stays under 2048 (Claude Code truncation). A unit test enforces both.
 - No machine-specific paths. libmoonshine and ONNX Runtime are found at run time (see above), data
