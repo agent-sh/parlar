@@ -4,6 +4,7 @@
   <p>
     <a href="https://github.com/agent-sh/parlar/actions/workflows/ci.yml"><img src="https://github.com/agent-sh/parlar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://crates.io/crates/parlar"><img src="https://img.shields.io/crates/v/parlar.svg" alt="crates.io"></a>
+    <a href="https://www.npmjs.com/package/@agent-sh/parlar"><img src="https://img.shields.io/npm/v/@agent-sh/parlar.svg" alt="npm"></a>
     <a href="#license"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg" alt="License: MIT OR Apache-2.0"></a>
   </p>
 </div>
@@ -89,7 +90,18 @@ It builds, installs into `~/.local` (set `PREFIX` to change it), and downloads l
 models. It also writes the plugins into a local marketplace, installs the GNOME indicator, and
 starts the service. `--no-service` skips the service.
 
-### Option C: `cargo install`
+### Option C: npm
+
+```
+npm install -g @agent-sh/parlar
+parlard fetch      # libmoonshine and the models, once
+parlard service    # systemd user service for this parlard
+```
+
+The package downloads the release binaries for your machine and checks their sha256. If your npm
+blocks install scripts, add `--allow-scripts=@agent-sh/parlar`.
+
+### Option D: `cargo install`
 
 ```
 cargo install parlar parlard
@@ -97,7 +109,7 @@ parlard fetch      # libmoonshine and the models, once
 parlard service    # systemd user service for this parlard
 ```
 
-### Option D: prebuilt binaries
+### Option E: prebuilt binaries
 
 Each [release](https://github.com/agent-sh/parlar/releases) has
 `parlar-<version>-<target>.tar.gz` with a `.sha256` next to it. Put `parlar` and `parlard` on your
