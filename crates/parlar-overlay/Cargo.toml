@@ -13,7 +13,7 @@ categories = ["gui", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1"
-parlar = { path = "../parlar", version = "0.1.6" }
+parlar = { path = "../parlar", version = "0.1.7" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
