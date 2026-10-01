@@ -105,11 +105,11 @@ fn comm(pid: u32) -> String {
 pub fn origin(session: Option<String>) -> Origin {
     let pids = ancestors();
     let harness_pid = pids.iter().copied().find(|&p| !SHELLS.contains(&comm(p).as_str()));
-    Origin { session, pids, harness_pid, mcp: false }
+    Origin { session, pids, harness_pid, mcp: false, ..Default::default() }
 }
 
 /// Origin of the MCP server: the harness is its parent.
 pub fn mcp_origin(session: Option<String>) -> Origin {
     let pids = ancestors();
-    Origin { session, harness_pid: pids.first().copied(), pids, mcp: true }
+    Origin { session, harness_pid: pids.first().copied(), pids, mcp: true, ..Default::default() }
 }

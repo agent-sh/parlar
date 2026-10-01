@@ -185,12 +185,21 @@ impl State {
     /// parlard shows up. MCP-only origins are never created here.
     fn find_or_attach(&mut self, o: &Origin) -> Option<usize> {
         if let Some(i) = self.find(o) {
+            // a session rebuilt after a restart learns its folder and harness from the next hook
+            let s = &mut self.sessions[i];
+            if let Some(cwd) = o.cwd.as_ref().filter(|_| s.cwd.is_empty()) {
+                s.cwd = cwd.clone();
+            }
+            if let Some(h) = o.harness.filter(|_| s.harness == Harness::Other) {
+                s.harness = h;
+            }
             return Some(i);
         }
         o.session.as_ref()?;
         let key = self.next_key;
         self.next_key += 1;
-        let mut s = Session::new(key, o.session.clone(), Harness::Other, String::new());
+        let harness = o.harness.unwrap_or(Harness::Other);
+        let mut s = Session::new(key, o.session.clone(), harness, o.cwd.clone().unwrap_or_default());
         s.harness_pid = o.harness_pid;
         self.sessions.push(s);
         let i = self.sessions.len() - 1;
@@ -1026,7 +1035,7 @@ mod tests {
         let served = tokio::spawn(d.clone().conn(b));
         let (rd, mut wr) = a.into_split();
         let mut lines = BufReader::new(rd).lines();
-        let o = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true };
+        let o = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true, ..Default::default() };
         let r = send(
             &mut wr,
             &mut lines,
@@ -1131,14 +1140,20 @@ mod tests {
             output: None,
         })
         .await;
-        let hook = Origin { session: Some("s1".into()), pids: vec![10, 4242, 7], harness_pid: Some(4242), mcp: false };
+        let hook = Origin {
+            session: Some("s1".into()),
+            pids: vec![10, 4242, 7],
+            harness_pid: Some(4242),
+            mcp: false,
+            ..Default::default()
+        };
         d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false })
             .await;
         let (a, b) = UnixStream::pair().unwrap();
         let served = tokio::spawn(d.clone().conn(b));
         let (rd, mut wr) = a.into_split();
         let mut lines = BufReader::new(rd).lines();
-        let mcp = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true };
+        let mcp = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true, ..Default::default() };
         send(
             &mut wr,
             &mut lines,
@@ -1185,7 +1200,7 @@ mod tests {
             session: Some(sid.into()),
             pids: vec![1, harness_pid],
             harness_pid: Some(harness_pid),
-            mcp: false,
+            ..Default::default()
         };
         d.handle(Request::Attach { origin: o.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
         d.handle(set(Some(true), Some(sid))).await;
@@ -1219,14 +1234,15 @@ mod tests {
     async fn a_nested_harness_never_matches_the_outer_session() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         // the outer session is known only through its MCP server (pid 700)
-        let outer_mcp = Origin { session: None, pids: vec![700, 1], harness_pid: Some(700), mcp: true };
+        let outer_mcp =
+            Origin { session: None, pids: vec![700, 1], harness_pid: Some(700), mcp: true, ..Default::default() };
         d.handle(Request::Attach { origin: outer_mcp, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
         // a nested `claude -p` (pid 900) runs from the outer session's shell
         let inner = Origin {
             session: Some("inner".into()),
             pids: vec![901, 900, 702, 700, 1],
             harness_pid: Some(900),
-            mcp: false,
+            ..Default::default()
         };
         d.handle(Request::Attach { origin: inner, harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
         let st = d.state.lock().await;
@@ -1239,8 +1255,13 @@ mod tests {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let old = talking_to(&d, "before-clear", 600).await;
         d.handle(Request::Detach { origin: old, rebind: true }).await;
-        let new =
-            Origin { session: Some("after-clear".into()), pids: vec![1, 600], harness_pid: Some(600), mcp: false };
+        let new = Origin {
+            session: Some("after-clear".into()),
+            pids: vec![1, 600],
+            harness_pid: Some(600),
+            mcp: false,
+            ..Default::default()
+        };
         d.handle(Request::Attach { origin: new.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false })
             .await;
         d.handle(Request::Hear { text: "hi".into(), heard: None }).await;
@@ -1340,5 +1361,29 @@ mod tests {
     fn lower_first_keeps_acronyms() {
         assert_eq!(lower_first("Watch CI"), "watch CI");
         assert_eq!(lower_first("CI run"), "CI run");
+    }
+
+    #[tokio::test]
+    async fn a_session_rebuilt_from_a_hook_gets_its_folder() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        // after a restart the first word from a session is a hook event, not an attach
+        let bare =
+            Origin { session: Some("s9".into()), pids: vec![1, 950], harness_pid: Some(950), ..Default::default() };
+        d.handle(Request::Event {
+            origin: bare.clone(),
+            event: TurnEvent::ToolStart,
+            tool: None,
+            detail: None,
+            call: None,
+        })
+        .await;
+        assert_eq!(d.state.lock().await.sessions[0].cwd, "");
+        let full = Origin { cwd: Some("/work/repo".into()), harness: Some(Harness::Claude), ..bare };
+        d.handle(Request::Event { origin: full, event: TurnEvent::ToolEnd, tool: None, detail: None, call: None })
+            .await;
+        let st = d.state.lock().await;
+        assert_eq!(st.sessions.len(), 1);
+        assert_eq!(st.sessions[0].cwd, "/work/repo");
+        assert_eq!(st.sessions[0].harness, Harness::Claude);
     }
 }
