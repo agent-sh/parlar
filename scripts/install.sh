@@ -6,7 +6,7 @@
 #   PREFIX=/opt/parlar scripts/install.sh
 #   scripts/install.sh --no-service
 #
-# Build needs: cargo, a C toolchain, clang, and the PipeWire and ALSA headers
+# Build needs: cargo, a C toolchain, clang, and on Linux the PipeWire and ALSA headers
 # (Debian/Ubuntu: libpipewire-0.3-dev libasound2-dev, Fedora: pipewire-devel alsa-lib-devel,
 # Arch: pipewire alsa-lib). Fetching needs curl and tar.
 set -eu
@@ -70,7 +70,8 @@ if command -v gnome-shell >/dev/null 2>&1; then
     cp -R "$ROOT/shell/gnome/parlar@avifenesh/." "$EXT/"
 fi
 
-if [ "$SERVICE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+# systemd on Linux, launchd on macOS
+if [ "$SERVICE" = 1 ] && { command -v systemctl >/dev/null 2>&1 || command -v launchctl >/dev/null 2>&1; }; then
     "$BIN/parlard" service
 fi
 

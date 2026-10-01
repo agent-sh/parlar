@@ -18,12 +18,18 @@ const TARGETS = {
   'linux-x64': 'x86_64-unknown-linux-gnu',
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'win32-x64': 'x86_64-pc-windows-msvc',
+  'darwin-arm64': 'aarch64-apple-darwin',
 };
 // on Windows libmoonshine is linked in, and ONNX Runtime and the Visual C++ runtime ship next to
 // the binaries (a fresh Windows has no VC++ runtime)
 const WINDOWS_RUNTIME = ['onnxruntime.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
+// on macOS libmoonshine is linked in too, and ONNX Runtime ships next to the binaries
 const binaries =
-  process.platform === 'win32' ? ['parlar.exe', 'parlard.exe', 'parlar-overlay.exe', ...WINDOWS_RUNTIME] : ['parlar', 'parlard'];
+  process.platform === 'win32'
+    ? ['parlar.exe', 'parlard.exe', 'parlar-overlay.exe', ...WINDOWS_RUNTIME]
+    : process.platform === 'darwin'
+      ? ['parlar', 'parlard', 'libonnxruntime.1.23.0.dylib']
+      : ['parlar', 'parlard'];
 const nativeDir = path.join(__dirname, 'bin', 'native');
 
 function fail(message) {
@@ -96,7 +102,7 @@ async function main() {
   }
   const target = TARGETS[`${process.platform}-${process.arch}`];
   if (!target) {
-    fail(`no parlar build for ${process.platform} ${process.arch}. Builds: Linux x64 and arm64, Windows x64.`);
+    fail(`no parlar build for ${process.platform} ${process.arch}. Builds: Linux x64 and arm64, Windows x64, macOS arm64.`);
   }
 
   const tag = `v${pkg.version}`;

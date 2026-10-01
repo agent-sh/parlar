@@ -24,7 +24,8 @@ pub fn endpoint() -> PathBuf {
 #[cfg(unix)]
 fn default_endpoint() -> PathBuf {
     // harnesses may start MCP servers with a scrubbed environment, so XDG_RUNTIME_DIR can be
-    // missing even on a systemd desktop; /run/user/<uid> is where it would point
+    // missing even on a systemd desktop; /run/user/<uid> is where it would point. macOS has
+    // neither, so the socket goes under the user's temp folder, which is per user there.
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
@@ -38,9 +39,11 @@ fn default_endpoint() -> PathBuf {
 
 #[cfg(unix)]
 fn uid() -> u32 {
-    // std has no getuid; /proc/self is owned by the caller's uid
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: getuid takes nothing and cannot fail
+    unsafe { getuid() }
 }
 
 #[cfg(windows)]

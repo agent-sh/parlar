@@ -48,27 +48,57 @@ pub fn turn_model() -> PathBuf {
     root().join("turn").join(TURN_FILE)
 }
 
-/// The runtime files `fetch` installs. On Windows libmoonshine is linked into parlard, so only
-/// ONNX Runtime is a separate file there.
-#[cfg(not(windows))]
+/// The runtime files `fetch` installs. On Linux libmoonshine is a shared library with its own
+/// ONNX Runtime beside it. On Windows and macOS libmoonshine is linked into parlard (its releases
+/// there are static libraries), so only ONNX Runtime is a separate file.
+#[cfg(target_os = "linux")]
 const MOONSHINE: &str = "libmoonshine.so";
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 const ORT: &str = "libonnxruntime.so.1";
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 const RUNTIME: &[&str] = &[ORT, MOONSHINE];
 #[cfg(windows)]
 const ORT: &str = "onnxruntime.dll";
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+const ORT: &str = "libonnxruntime.1.23.0.dylib";
+#[cfg(not(target_os = "linux"))]
 const MOONSHINE: &str = ORT;
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 const RUNTIME: &[&str] = &[ORT];
 
-/// The pinned libmoonshine release per OS and architecture, with the sha256 of its tarball.
-const MOONSHINE_VERSION: &str = "v0.1.5";
-const MOONSHINE_RELEASES: &[(&str, &str, &str, &str)] = &[
-    ("linux", "x86_64", "linux-x86_64", "9c3a87fea93ff2ad957938868f95a0a366dce9ff8ad86bde6cdcf5a4cadb51df"),
-    ("linux", "aarch64", "linux-arm64", "1600c80a0806b7a2582307c98e7a56f4072e4b060498b08a0b75eb20af42def2"),
-    ("windows", "x86_64", "windows-x86_64", "97c1987e8e1cd77bb5fe3b12ce5aad5172637107e1dfda112ea9b21bac8f4b65"),
+/// Where the runtime files come from, per OS and architecture: the tarball URL, its sha256, and
+/// the folder inside it that holds the files. Linux takes libmoonshine's own release (shared
+/// library plus ONNX Runtime); Windows takes ONNX Runtime from libmoonshine's release too; macOS
+/// takes ONNX Runtime from Microsoft's release, because libmoonshine's macOS release has none.
+const RUNTIME_RELEASES: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "linux",
+        "x86_64",
+        "https://github.com/moonshine-ai/moonshine/releases/download/v0.1.5/moonshine-voice-linux-x86_64.tar.gz",
+        "9c3a87fea93ff2ad957938868f95a0a366dce9ff8ad86bde6cdcf5a4cadb51df",
+        "moonshine-voice-linux-x86_64/lib",
+    ),
+    (
+        "linux",
+        "aarch64",
+        "https://github.com/moonshine-ai/moonshine/releases/download/v0.1.5/moonshine-voice-linux-arm64.tar.gz",
+        "1600c80a0806b7a2582307c98e7a56f4072e4b060498b08a0b75eb20af42def2",
+        "moonshine-voice-linux-arm64/lib",
+    ),
+    (
+        "windows",
+        "x86_64",
+        "https://github.com/moonshine-ai/moonshine/releases/download/v0.1.5/moonshine-voice-windows-x86_64.tar.gz",
+        "97c1987e8e1cd77bb5fe3b12ce5aad5172637107e1dfda112ea9b21bac8f4b65",
+        "moonshine-voice-windows-x86_64/lib",
+    ),
+    (
+        "macos",
+        "aarch64",
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz",
+        "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf",
+        "onnxruntime-osx-arm64-1.23.0/lib",
+    ),
 ];
 
 /// Where libmoonshine and its ONNX Runtime are: `$PARLAR_LIB_DIR`, next to this binary,
@@ -140,41 +170,31 @@ fn fetch_moonshine() -> Result<()> {
         return Ok(());
     }
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    let Some((_, _, platform, sha)) = MOONSHINE_RELEASES.iter().find(|(o, a, _, _)| *o == os && *a == arch) else {
+    let Some((_, _, url, sha, inner)) = RUNTIME_RELEASES.iter().find(|(o, a, _, _, _)| *o == os && *a == arch) else {
         bail!(
-            "no prebuilt libmoonshine for {os}/{arch}; put {} in a directory and set PARLAR_LIB_DIR",
+            "no prebuilt speech runtime for {os}/{arch}; put {} in a directory and set PARLAR_LIB_DIR",
             RUNTIME.join(" and ")
         );
     };
-    let name = format!("moonshine-voice-{platform}");
     let dest = parlar::dirs::data().join("lib");
     let tmp = dest.join(".fetch");
     let _ = std::fs::remove_dir_all(&tmp);
-    let tarball = File {
-        sha256: Some((*sha).into()),
-        size: None,
-        ..File::new(
-            &format!("{name}.tar.gz"),
-            &format!("https://github.com/moonshine-ai/moonshine/releases/download/{MOONSHINE_VERSION}/{name}.tar.gz"),
-            0,
-        )
-    };
+    let tarball = File { sha256: Some((*sha).into()), size: None, ..File::new("runtime.tar.gz", url, 0) };
     download(&Manifest { groups: vec![Group { files: vec![tarball] }] }, &tmp)?;
     let ok = Command::new("tar")
         .arg("xzf")
-        .arg(tmp.join(format!("{name}.tar.gz")))
+        .arg(tmp.join("runtime.tar.gz"))
         .arg("-C")
         .arg(&tmp)
         .status()
         .context("run tar")?
         .success();
     if !ok {
-        bail!("unpack {name}.tar.gz failed");
+        bail!("unpack {url} failed");
     }
     std::fs::create_dir_all(&dest)?;
     for lib in RUNTIME {
-        std::fs::rename(tmp.join(&name).join("lib").join(lib), dest.join(lib))
-            .with_context(|| format!("install {lib}"))?;
+        std::fs::rename(tmp.join(inner).join(lib), dest.join(lib)).with_context(|| format!("install {lib}"))?;
     }
     std::fs::remove_dir_all(&tmp)?;
     Ok(())

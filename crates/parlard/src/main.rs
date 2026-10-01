@@ -417,7 +417,7 @@ fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Res
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 /// Write `parlard.service` for the current user, pointing at this binary, and (re)start it.
 fn service() -> Result<()> {
     use anyhow::{Context, bail};
@@ -559,5 +559,61 @@ fn start_detached(exe: &std::path::Path) -> Result<()> {
                 .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
                 .spawn()
         })?;
+    Ok(())
+}
+
+/// macOS: a launchd user agent that starts parlard at login and keeps it running.
+#[cfg(target_os = "macos")]
+fn service() -> Result<()> {
+    use anyhow::{Context, bail};
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).context("HOME is not set")?;
+    let plist = home.join("Library/LaunchAgents/dev.agent-sh.parlard.plist");
+    std::fs::create_dir_all(plist.parent().unwrap())?;
+    let log = parlar::dirs::data().join("parlard.log");
+    std::fs::create_dir_all(log.parent().unwrap())?;
+    std::fs::write(
+        &plist,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.agent-sh.parlard</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict>
+</plist>
+"#,
+            exe = exe.display(),
+            log = log.display()
+        ),
+    )?;
+    let uid = unsafe {
+        unsafe extern "C" {
+            fn getuid() -> u32;
+        }
+        // SAFETY: getuid takes nothing and cannot fail
+        getuid()
+    };
+    let domain = format!("gui/{uid}");
+    // a reinstall replaces the running agent
+    let _ =
+        std::process::Command::new("launchctl").args(["bootout", &format!("{domain}/dev.agent-sh.parlard")]).output();
+    let ok = std::process::Command::new("launchctl")
+        .arg("bootstrap")
+        .arg(&domain)
+        .arg(&plist)
+        .status()
+        .context("run launchctl")?
+        .success();
+    if !ok {
+        bail!("launchctl bootstrap {} failed", plist.display());
+    }
+    println!("{} runs {} at login (launchd, {domain})", plist.display(), exe.display());
     Ok(())
 }

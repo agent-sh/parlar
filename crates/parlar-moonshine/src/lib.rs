@@ -1,9 +1,9 @@
 //! Safe wrappers over the libmoonshine C API (header version 30000): Kokoro synthesis, sentence
 //! splitting and the voice download manifest.
 //!
-//! On Linux and macOS the library is loaded at run time with [`open`], so nothing links against
-//! it and a binary installed anywhere finds it wherever the caller keeps it. libmoonshine's
-//! Windows release is a static library, so there the build script links it and [`open`] only
+//! On Linux the library is loaded at run time with [`open`], so nothing links against it and a
+//! binary installed anywhere finds it wherever the caller keeps it. libmoonshine's Windows and
+//! macOS releases are static libraries, so there the build script links them and [`open`] only
 //! records that it is ready.
 
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -43,14 +43,14 @@ mod sys {
     macro_rules! api {
         ($($name:ident: fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
             pub struct Api {
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 _lib: libloading::Library,
                 $(pub $name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
             }
 
-            /// Windows: libmoonshine ships as a static library, linked into the binary by the
-            /// build script.
-            #[cfg(windows)]
+            /// Windows and macOS: libmoonshine ships as a static library, linked into the binary
+            /// by the build script.
+            #[cfg(not(target_os = "linux"))]
             mod linked {
                 use super::*;
                 unsafe extern "C" {
@@ -59,7 +59,7 @@ mod sys {
             }
 
             impl Api {
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 pub fn load(path: &Path) -> Result<Api> {
                     // SAFETY: libmoonshine runs no unsound initializers; the symbols are copied
                     // out as plain fn pointers and the library lives as long as they do
@@ -70,7 +70,7 @@ mod sys {
                     }
                 }
 
-                #[cfg(windows)]
+                #[cfg(not(target_os = "linux"))]
                 pub fn load(_path: &Path) -> Result<Api> {
                     Ok(Api { $($name: linked::$name,)* })
                 }
