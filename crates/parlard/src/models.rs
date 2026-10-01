@@ -42,15 +42,14 @@ pub fn vad_model() -> PathBuf {
     root().join("vad").join(VAD_FILE)
 }
 
-/// The speech recognizer: Phonon-2, or Parakeet TDT 0.6B v3 (the same layout) if only that is
-/// installed.
+/// The speech recognizer's directory: a built-in model under the models root, or a directory
+/// named in config.toml.
 pub fn final_dir() -> PathBuf {
-    let stt = root().join("stt");
-    ["phonon-2", "parakeet-tdt-0.6b-v3"]
-        .iter()
-        .map(|n| stt.join(n))
-        .find(|d| d.join("vocab.txt").exists())
-        .unwrap_or_else(|| stt.join("phonon-2"))
+    let model = crate::config::get().recognizer();
+    match model.as_str() {
+        crate::config::PHONON | crate::config::PARAKEET => root().join("stt").join(model),
+        dir => PathBuf::from(dir),
+    }
 }
 
 pub fn turn_model() -> PathBuf {
@@ -246,27 +245,127 @@ fn file_crc32c(path: &Path) -> Result<u32> {
 const PHONON_REPO: &str =
     "https://huggingface.co/tiyuvta/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
 const PHONON_FILES: &[(&str, u64, &str)] = &[
-    ("encoder-model.int8.onnx", 614_486_780, "3c100e38ca2e70623c928ab5c5414c62848603ea3d943a7f2e1c3ce1d92fc04b"),
     ("decoder_joint-model.onnx", 72_518_934, "420125e0e13596692320c35ef648eee9bf4583718c7896c8732ebf6f50b9ca0d"),
     ("preprocessor-model.onnx", 1_193_996, "8184d564f7d34d1daf04e4b35a0222fb72c54668b38dcd2b8ddda3517676614b"),
     ("vocab.txt", 93_939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
     ("config.json", 121, "db59e29a3c1fde6a081bf04965e72bba26cd65be1aee65b064360df8aef468e5"),
 ];
 
+/// Pinned files: name, size, sha256.
+type Files = &'static [(&'static str, u64, &'static str)];
+
+/// Phonon-2's encoders: int8 (the default), the bit-exact exact4x2, and fp32 with its weights file.
+const PHONON_ENCODERS: &[(&str, Files)] = &[
+    (
+        "int8",
+        &[("encoder-model.int8.onnx", 614_486_780, "3c100e38ca2e70623c928ab5c5414c62848603ea3d943a7f2e1c3ce1d92fc04b")],
+    ),
+    (
+        "exact4x2",
+        &[(
+            "encoder-model.exact4x2.onnx",
+            662_190_977,
+            "abfdefaa1c74d6d3ca367a7ed358732a6140fb26a312b650ee57e46f1a9849ec",
+        )],
+    ),
+    (
+        "fp32",
+        &[
+            ("encoder-model.onnx", 789_941, "799506536ea9ab6933174bae2bb00177284f79419ceb5efa7e35a16bb9d4133f"),
+            (
+                "encoder-model.onnx.data",
+                2_435_420_160,
+                "4fa6441ccbed2c8d1242bd5cf7a9ee522b57148fadb34a016fa661e8d540fab3",
+            ),
+        ],
+    ),
+];
+
+/// Parakeet TDT 0.6B v3 in ONNX (istupakov/parakeet-tdt-0.6b-v3-onnx, 25 European languages),
+/// pinned to one revision. Its NeMo front end is the one Phonon-2 ships, from that pinned repo.
+const PARAKEET_REPO: &str =
+    "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
+const PARAKEET_FILES: &[(&str, u64, &str)] = &[
+    ("decoder_joint-model.int8.onnx", 18_202_004, "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"),
+    ("vocab.txt", 93_939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+    ("config.json", 97, "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"),
+];
+
+const PARAKEET_ENCODERS: &[(&str, Files)] = &[
+    (
+        "int8",
+        &[("encoder-model.int8.onnx", 652_183_999, "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09")],
+    ),
+    (
+        "fp32",
+        &[
+            ("encoder-model.onnx", 41_770_866, "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1"),
+            (
+                "encoder-model.onnx.data",
+                2_435_420_160,
+                "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36",
+            ),
+        ],
+    ),
+];
+
+/// The encoder variants a built-in recognizer ships, for validating config.toml.
+pub fn encoders(model: &str) -> &'static [&'static str] {
+    match model {
+        crate::config::PARAKEET => &["int8", "fp32"],
+        _ => &["int8", "exact4x2", "fp32"],
+    }
+}
+
+/// The configured encoder's files, int8 when none is set.
+fn encoder_files(table: &'static [(&'static str, Files)]) -> Files {
+    let want = crate::config::get().recognizer.encoder.as_deref().unwrap_or("int8");
+    table.iter().find(|(e, _)| *e == want).map_or(table[0].1, |(_, f)| f)
+}
+
+fn pinned(repo: &str, files: &[(&str, u64, &str)]) -> Manifest {
+    let files = files
+        .iter()
+        .map(|(n, size, sha)| File { sha256: Some((*sha).into()), ..File::new(n, &format!("{repo}/{n}"), *size) })
+        .collect();
+    Manifest { groups: vec![Group { files }] }
+}
+
+/// libmoonshine's default voice for a language, read from its download manifest: a Kokoro voice
+/// file `kokoro/voices/<v>.kokorovoice` is the voice `kokoro_<v>`.
+pub fn default_voice(lang: &str) -> Option<String> {
+    let m: Manifest = serde_json::from_str(&parlar_moonshine::tts_manifest(lang, &[]).ok()?).ok()?;
+    m.groups.iter().flat_map(|g| &g.files).find_map(|f| {
+        let v = f.name.strip_prefix("kokoro/voices/")?.strip_suffix(".kokorovoice")?;
+        Some(format!("kokoro_{v}"))
+    })
+}
+
 pub fn fetch(voice: &str) -> Result<()> {
     fetch_moonshine()?;
     moonshine()?;
-    let stt = root().join("stt/phonon-2");
-    let files = PHONON_FILES
-        .iter()
-        .map(|(n, size, sha)| File {
-            sha256: Some((*sha).into()),
-            ..File::new(n, &format!("{PHONON_REPO}/{n}"), *size)
-        })
-        .collect();
-    download(&Manifest { groups: vec![Group { files }] }, &stt)?;
-    let tts = parlar_moonshine::tts_manifest("en", &[("voice", voice)])?;
-    download(&serde_json::from_str(&tts)?, &tts_dir())?;
+    let cfg = crate::config::get();
+    let stt = final_dir();
+    match cfg.recognizer().as_str() {
+        crate::config::PHONON => {
+            download(&pinned(PHONON_REPO, PHONON_FILES), &stt)?;
+            download(&pinned(PHONON_REPO, encoder_files(PHONON_ENCODERS)), &stt)?;
+        }
+        crate::config::PARAKEET => {
+            download(&pinned(PARAKEET_REPO, PARAKEET_FILES), &stt)?;
+            download(&pinned(PARAKEET_REPO, encoder_files(PARAKEET_ENCODERS)), &stt)?;
+            let pre: Vec<_> =
+                PHONON_FILES.iter().filter(|(n, _, _)| *n == "preprocessor-model.onnx").copied().collect();
+            download(&pinned(PHONON_REPO, &pre), &stt)?;
+        }
+        dir => eprintln!("recognizer: using the model in {dir}"),
+    }
+    if cfg.voice.command.is_empty() {
+        let lang = cfg.language().tts.unwrap_or("en_us");
+        let opts: Vec<(&str, &str)> = if voice.is_empty() { vec![] } else { vec![("voice", voice)] };
+        let tts = parlar_moonshine::tts_manifest(lang, &opts).with_context(|| format!("voice files for {lang}"))?;
+        download(&serde_json::from_str(&tts)?, &tts_dir())?;
+    }
     let turn = Manifest {
         groups: vec![Group {
             files: vec![File { sha256: Some(TURN_SHA256.into()), ..File::new(TURN_FILE, TURN_URL, TURN_SIZE) }],

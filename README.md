@@ -194,6 +194,39 @@ Phonon-2 is Fermion Research's English recognizer derived from NVIDIA's Parakeet
 exported it to ONNX and publish it on Hugging Face. The int8 encoder scores 4.35% WER on LibriSpeech
 dev-clean, against 4.26% for the exact fp32 export. The model card has the details.
 
+## Language, recognizer and voice
+
+Settings live in `~/.config/parlar/config.toml` (`$XDG_CONFIG_HOME/parlar/config.toml`). Every key
+is optional; without the file parlar is English with Phonon-2 and Kokoro's af_heart voice.
+
+```toml
+language = "es"                   # what you speak and what the voice speaks
+
+[recognizer]
+model = "parakeet-tdt-0.6b-v3"    # phonon-2 (English), parakeet-tdt-0.6b-v3, or a model directory
+encoder = "int8"                  # int8, exact4x2 or fp32, when the model ships them
+
+[voice]
+name = "kokoro_ef_dora"           # any voice libmoonshine has for the language
+command = ["espeak-ng", "-v", "es"]   # or speak through any program that reads text on stdin
+```
+
+After a change, run `parlard fetch` (it downloads only what the new settings need) and restart the
+service. `parlard config` prints what is in use.
+
+| Language | Recognizer | Voice |
+|---|---|---|
+| English (`en`, `en-gb`) | Phonon-2 (default) or Parakeet | Kokoro |
+| Spanish, French, Italian, Portuguese (`es`, `fr`, `it`, `pt`) | Parakeet | Kokoro |
+| German, Russian (`de`, `ru`) | Parakeet | Piper (through libmoonshine) |
+| Japanese, Chinese, Hindi (`ja`, `zh`, `hi`) | a model directory you supply | Kokoro |
+| 18 more European languages Parakeet knows (`pl`, `nl`, `sv`, `uk`, ...) | Parakeet | your `[voice] command` |
+
+A model directory is any ONNX export in the onnx-asr `nemo-conformer-tdt` layout (encoder,
+decoder_joint, vocab.txt, and a preprocessor). Hebrew is not covered by either recognizer or
+libmoonshine yet. Outside English the turn rules rely on punctuation and the Smart Turn model,
+which is multilingual, rather than on English filler words.
+
 ## Resource use
 
 Measured on a Core Ultra 9 275HX laptop:

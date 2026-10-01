@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- `config.toml` picks the language, the recognizer (Phonon-2, Parakeet TDT 0.6B v3 for 25
+  European languages, or any onnx-asr TDT model directory), the encoder and the voice (any
+  libmoonshine voice, or an external command). `parlard fetch` downloads what the settings need;
+  `parlard config` prints them. Tested round trips in Spanish, French and German.
 - Codex skills `$parlar:talk`, `$parlar:stop` and `$parlar:mute`. Codex plugins cannot ship slash
   commands, and the talk skill focuses its own session through `$CODEX_THREAD_ID`.
 - The busy answer in Codex names short plain commands ("running cargo test").

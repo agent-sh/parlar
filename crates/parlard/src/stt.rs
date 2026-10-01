@@ -42,7 +42,10 @@ impl Tdt {
         crate::turn::init_ort(ort_lib)?;
         // a model may ship its own preprocessor (Phonon-2 does); onnx-asr's nemo128 otherwise
         let pre = session(&pick(dir, &["preprocessor-model.onnx", "nemo128.onnx"])?, 1)?;
-        let enc_name = std::env::var("PARLAR_ENCODER").ok().filter(|n| !n.is_empty());
+        let enc_name = std::env::var("PARLAR_ENCODER")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .or_else(|| crate::config::get().encoder_file());
         let enc_names: Vec<&str> = match enc_name.as_deref() {
             Some(n) => vec![n],
             None => vec!["encoder-model.int8.onnx", "encoder-model.exact4x2.onnx", "encoder-model.onnx"],

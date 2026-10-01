@@ -636,7 +636,9 @@ fn hold(text: &str, score: Option<f32>) -> Duration {
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric())
         .to_lowercase();
-    if t.ends_with(',') || t.ends_with("...") || HOLD_TAIL.contains(&last.as_str()) || last == "think" {
+    // the tail words are English; other languages rely on punctuation and the turn model
+    let english = crate::config::get().language().english;
+    if t.ends_with(',') || t.ends_with("...") || (english && (HOLD_TAIL.contains(&last.as_str()) || last == "think")) {
         return Duration::from_millis(3000);
     }
     // one or two words is usually the start of a thought, not the whole of it
@@ -653,11 +655,13 @@ const FILLERS: &[&str] = &["um", "uh", "uhm", "umm", "erm", "er", "hmm", "hm", "
 
 /// Drop filler words. Self-repairs stay; the model resolves them with the heard text beside.
 pub fn clean(raw: &str) -> String {
+    // the fillers are English: "um" is a word in Portuguese and German
+    let english = crate::config::get().language().english;
     let kept: Vec<&str> = raw
         .split_whitespace()
         .filter(|w| {
             let bare = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-            !FILLERS.contains(&bare.as_str())
+            !english || !FILLERS.contains(&bare.as_str())
         })
         .collect();
     let mut s = kept.join(" ");

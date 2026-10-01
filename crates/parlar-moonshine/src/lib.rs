@@ -225,7 +225,11 @@ impl Tts {
     pub fn load(root: &Path, lang: &str, voice: &str, extra: &[(&str, &str)]) -> Result<Tts> {
         let l = CString::new(lang)?;
         let root = root.to_string_lossy().into_owned();
-        let mut pairs = vec![("g2p_root", root.as_str()), ("voice", voice)];
+        let mut pairs = vec![("g2p_root", root.as_str())];
+        // empty: libmoonshine's default voice for the language
+        if !voice.is_empty() {
+            pairs.push(("voice", voice));
+        }
         pairs.extend_from_slice(extra);
         let o = Opts::new(&pairs)?;
         // SAFETY: valid strings; no explicit file list, assets resolve under g2p_root
