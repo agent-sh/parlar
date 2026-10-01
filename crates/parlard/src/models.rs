@@ -43,7 +43,8 @@ pub fn vad_model() -> PathBuf {
     root().join("vad").join(VAD_FILE)
 }
 
-/// The final-transcript model: Phonon-2 when present, else Parakeet TDT 0.6B v3.
+/// The speech recognizer: Phonon-2, or Parakeet TDT 0.6B v3 (the same layout) if only that is
+/// installed.
 pub fn final_dir() -> PathBuf {
     let stt = root().join("stt");
     ["phonon-2", "parakeet-tdt-0.6b-v3"]
@@ -93,11 +94,14 @@ struct File {
     checksum: Option<String>,
     #[serde(default)]
     checksum_type: Option<String>,
+    /// Hex sha256, for files we pin ourselves.
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 impl File {
     fn new(name: &str, url: &str, size: u64) -> File {
-        File { name: name.into(), url: url.into(), size: Some(size), checksum: None, checksum_type: None }
+        File { name: name.into(), url: url.into(), size: Some(size), checksum: None, checksum_type: None, sha256: None }
     }
 
     /// The expected CRC32C, when the manifest gives one.
@@ -155,27 +159,24 @@ fn file_crc32c(path: &Path) -> Result<u32> {
     }
 }
 
-/// Parakeet TDT 0.6B v3 in the onnx-asr layout, pinned to one revision of its repo.
-const PARAKEET_REPO: &str = "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
-const PARAKEET_FILES: &[(&str, u64)] = &[
-    ("encoder-model.int8.onnx", 652_183_999),
-    ("decoder_joint-model.int8.onnx", 18_202_004),
-    ("vocab.txt", 93_939),
-    ("config.json", 97),
+/// Phonon-2 in ONNX (tiyuvta/Phonon-2-ONNX), pinned to one revision: the int8 encoder, the fp32
+/// decoder, its own preprocessor, vocab and config, each checked by sha256.
+const PHONON_REPO: &str = "https://huggingface.co/tiyuvta/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
+const PHONON_FILES: &[(&str, u64, &str)] = &[
+    ("encoder-model.int8.onnx", 614_486_780, "3c100e38ca2e70623c928ab5c5414c62848603ea3d943a7f2e1c3ce1d92fc04b"),
+    ("decoder_joint-model.onnx", 72_518_934, "420125e0e13596692320c35ef648eee9bf4583718c7896c8732ebf6f50b9ca0d"),
+    ("preprocessor-model.onnx", 1_193_996, "8184d564f7d34d1daf04e4b35a0222fb72c54668b38dcd2b8ddda3517676614b"),
+    ("vocab.txt", 93_939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+    ("config.json", 121, "db59e29a3c1fde6a081bf04965e72bba26cd65be1aee65b064360df8aef468e5"),
 ];
-/// The NeMo mel preprocessor is generated when onnx-asr is packaged, so it comes from the
-/// pinned wheel (MIT), checked by sha256.
-const ONNX_ASR_WHEEL: &str = "https://files.pythonhosted.org/packages/6a/60/2fa469a2ee674c35ab48821a1039762ae7b9d0b88188ac1012e779477f76/onnx_asr-0.12.0-py3-none-any.whl";
-const ONNX_ASR_WHEEL_SHA256: &str = "5e7ceca454609819ea7833f61e2302e0c8f6ece4f8a78b66c5daba53cb51de4a";
-const NEMO128_MEMBER: &str = "onnx_asr/preprocessors/data/nemo128.onnx";
 
 pub fn fetch(voice: &str) -> Result<()> {
-    let stt = root().join("stt/parakeet-tdt-0.6b-v3");
-    let files = PARAKEET_FILES.iter().map(|(n, size)| File::new(n, &format!("{PARAKEET_REPO}/{n}"), *size)).collect();
+    let stt = root().join("stt/phonon-2");
+    let files = PHONON_FILES
+        .iter()
+        .map(|(n, size, sha)| File { sha256: Some((*sha).into()), ..File::new(n, &format!("{PHONON_REPO}/{n}"), *size) })
+        .collect();
     download(&Manifest { groups: vec![Group { files }] }, &stt)?;
-    if !stt.join("nemo128.onnx").exists() {
-        fetch_preprocessor(&stt)?;
-    }
     let tts = parlar_moonshine::tts_manifest("en", &[("voice", voice)])?;
     download(&serde_json::from_str(&tts)?, &tts_dir())?;
     let turn = Manifest {
@@ -191,27 +192,20 @@ pub fn fetch(voice: &str) -> Result<()> {
     Ok(())
 }
 
-fn fetch_preprocessor(dir: &Path) -> Result<()> {
+fn file_sha256(p: &Path) -> Result<String> {
     use sha2::Digest;
     use std::io::Read;
-    eprintln!("fetch nemo128.onnx (from the onnx-asr 0.12.0 wheel)");
-    let wheel = dir.join(".onnx-asr.whl.part");
-    let ok = Command::new("curl").args(["-fsSL", "--retry", "3", "-o"]).arg(&wheel).arg(ONNX_ASR_WHEEL).status()?.success();
-    if !ok {
-        bail!("download failed: {ONNX_ASR_WHEEL}");
+    let mut h = sha2::Sha256::new();
+    let mut f = std::fs::File::open(p)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
     }
-    let bytes = std::fs::read(&wheel)?;
-    let _ = std::fs::remove_file(&wheel);
-    let got = format!("{:x}", sha2::Sha256::digest(&bytes));
-    if got != ONNX_ASR_WHEEL_SHA256 {
-        bail!("onnx-asr wheel checksum mismatch: got {got}");
-    }
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-    let mut member = zip.by_name(NEMO128_MEMBER)?;
-    let mut out = Vec::new();
-    member.read_to_end(&mut out)?;
-    std::fs::write(dir.join("nemo128.onnx"), out)?;
-    Ok(())
+    Ok(format!("{:x}", h.finalize()))
 }
 
 fn download(m: &Manifest, dir: &Path) -> Result<()> {
@@ -224,7 +218,8 @@ fn download(m: &Manifest, dir: &Path) -> Result<()> {
             (Err(_), _) => false,
         };
         // a file of the right size can still be damaged; the checksum decides when there is one
-        if have && crc.is_none_or(|want| file_crc32c(&dest).is_ok_and(|got| got == want)) {
+        let sha_ok = |p: &Path| f.sha256.as_ref().is_none_or(|want| file_sha256(p).is_ok_and(|got| &got == want));
+        if have && crc.is_none_or(|want| file_crc32c(&dest).is_ok_and(|got| got == want)) && sha_ok(&dest) {
             continue;
         }
         if let Some(parent) = dest.parent() {
@@ -256,6 +251,10 @@ fn download(m: &Manifest, dir: &Path) -> Result<()> {
                 let _ = std::fs::remove_file(&part);
                 bail!("{}: crc32c {got:08x}, expected {want:08x}", f.name);
             }
+        }
+        if !sha_ok(&part) {
+            let _ = std::fs::remove_file(&part);
+            bail!("{}: sha256 does not match the pinned value", f.name);
         }
         std::fs::rename(&part, &dest)?;
     }

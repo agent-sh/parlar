@@ -8,10 +8,10 @@ read back what was said.
 
 Everything runs locally on the CPU. No speech leaves your machine.
 
-- Speech recognition: Moonshine v2 Small, streaming, biased toward the file names of the repo you
-  are working in.
-- Listening: a voice detector (Silero VAD) wakes the recognizer only while someone speaks; noise
-  suppression and automatic gain make a laptop mic usable.
+- Listening: a voice detector (Silero VAD) marks speech and pauses; noise suppression and automatic
+  gain make a laptop mic usable. Nothing transcribes while nobody talks.
+- Speech recognition: [Phonon-2](https://huggingface.co/tiyuvta/Phonon-2-ONNX) in ONNX, run at each
+  pause on the turn so far.
 - End of turn: waits through thinking pauses ("so...", "and...") using word rules plus the Smart
   Turn audio model.
 - Voice: Kokoro-82M, streamed by sentence. Talk over it and it stops.
@@ -48,7 +48,7 @@ parlar setup claude
 ```
 
 `scripts/install.sh` builds, installs into `~/.local` (set `PREFIX` to change it), downloads the
-speech models (about 250 MB, into `$XDG_DATA_HOME/parlar/models`), installs the GNOME indicator and
+speech models (about 800 MB, into `$XDG_DATA_HOME/parlar/models`), installs the GNOME indicator and
 starts the `parlard` user service. `--no-service` skips the service. `parlar setup claude` lets the
 agent speak without a permission prompt on every line.
 
@@ -126,10 +126,11 @@ While the conversation is stopped the mic is closed. Design notes and decisions 
   (`heard u3 -> /path/to/session`) and what it says.
 - Nothing is heard: check `parlar ctl state` (is it on, is a session focused), then the mic with
   `parlar ctl devices`. A Bluetooth headset in A2DP mode has no mic.
+- Memory: while a conversation is on, parlard holds about 1.4 GB, mostly the recognizer; two minutes
+  after you stop it unloads the models.
 - Your words go to the wrong session: run `/parlar:talk` in the session you want.
 - `parlard fetch` downloads missing models again; `parlard speak "hello"` writes a test line to
-  `parlar-speak.wav`; `parlard transcribe --clean file.wav` runs a recording through the
-  recognizer.
+  `parlar-speak.wav`; `parlard final file.wav` runs a recording through the recognizer.
 
 ## Uninstall
 
@@ -153,6 +154,7 @@ Conventions are in `AGENTS.md`.
 
 ## Licenses
 
-parlar is MIT or Apache-2.0, at your option. It downloads and uses: libmoonshine and the Moonshine
-models (MIT), Kokoro-82M (Apache-2.0), Smart Turn v3.2 (BSD-2-Clause), Silero VAD (MIT), and links
+parlar is MIT or Apache-2.0, at your option. It downloads and uses: Phonon-2 ONNX (CC-BY-4.0;
+Parakeet TDT 0.6B v3 by NVIDIA, Phonon-2 by Fermion Research, ONNX conversion by Tiyuvta), libmoonshine
+(MIT) for Kokoro-82M (Apache-2.0), Smart Turn v3.2 (BSD-2-Clause) and Silero VAD (MIT), and links
 sonora (BSD-3-Clause) and ONNX Runtime (MIT).

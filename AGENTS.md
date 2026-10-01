@@ -6,9 +6,11 @@ Indicator mockups: `design/indicator-lab.html` (the swarm is the chosen visual).
 ## Layout
 - `crates/parlar`: core library plus the light `parlar` binary (`mcp`, `hook <event>`, `status`,
   `ctl`). No audio and no ONNX Runtime here: hooks run on every tool call.
-- `crates/parlard`: the daemon. Audio (cpal on PipeWire), Moonshine recognition, endpointing with
-  Smart Turn, Kokoro voice, repo vocabulary. Debug subcommands: `speak`, `transcribe`, `turn`,
-  `devices`, `fetch`.
+- `crates/parlard`: the daemon. Audio (cpal on PipeWire), Silero VAD, Phonon-2 (ONNX, TDT decoding
+  in `stt.rs`) transcribing at pauses, endpointing with Smart Turn, Kokoro voice, repo vocabulary.
+  Models load when a conversation starts and unload two minutes after it stops. Debug subcommands:
+  `speak`, `final`, `turn`, `clean`, `devices`, `fetch`. The Phonon-2 export lives in its own repo
+  (`~/projects/phonon2-onnx`, published as tiyuvta/Phonon-2-ONNX).
 - `crates/parlar-moonshine`: bindings to libmoonshine. Its build script fetches the pinned
   release (sha256 checked) unless `PARLAR_MOONSHINE_DIR` is set, and copies the libraries next
   to the binaries.

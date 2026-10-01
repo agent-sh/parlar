@@ -252,3 +252,17 @@ Claude Code statusLine (`refreshInterval: 1`).
   per-user install script. Owner: "it needs to work for Linux users, not solely on this machine".
 - D10: an MCP-only session is released when its connection closes, so a dead MCP server never
   keeps voice focus.
+- D11 (2026-10-01): Moonshine v2 Small failed on the owner's real speech. Recognition is now
+  Phonon-2 (Fermion Research, a 2-bit derivative of Parakeet TDT 0.6B v3), exported to ONNX by us
+  and published as tiyuvta/Phonon-2-ONNX; the int8 encoder is the default (closest on the owner's
+  product names, 0.9 to 1.1 GB peak in our runtime). Owner.
+- D12: no streaming recognizer. Silero VAD marks pauses and the recognizer runs on the turn so far
+  at each pause, so nothing transcribes while nobody talks. The streaming one burned about five
+  cores on room noise.
+- D13: models load only during a conversation and unload two minutes after it stops; the owner's
+  bar is that a normal machine must not feel parlar.
+- D14: one synthesis call per sentence with pauses capped at 250 ms; streamed chunks left holes of
+  up to 0.7 s that the owner heard as the voice breaking up.
+- D15: voice focus moves only by choice (/parlar:talk, the indicator menu); following prompts sent
+  speech to busy agent sessions.
+- D16: the plugin prints the spoken exchange as a hook systemMessage, at no model token cost.
