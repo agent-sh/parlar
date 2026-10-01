@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs the installed parlar. Before parlar is installed the plugin must stay out of the way:
 # hooks exit quietly, and /parlar:setup explains what to install.
-for p in "${PARLAR_BIN:-}" "$HOME/.local/bin/parlar" "$(command -v parlar 2>/dev/null)"; do
+for p in "${PARLAR_BIN:-}" "$HOME/.local/bin/parlar" "$HOME/.cargo/bin/parlar" "$(command -v parlar 2>/dev/null)"; do
     if [ -n "$p" ] && [ -x "$p" ] && [ "$p" != "$0" ]; then
         exec "$p" "$@"
     fi

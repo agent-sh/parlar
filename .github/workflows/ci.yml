@@ -23,7 +23,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --release --locked -- -D warnings
       - name: Shell scripts
-        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parlar
+        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parlar && sh -n plugin/codex/bin/parlar
       - name: Plugin manifests
         run: |
           for f in .claude-plugin/marketplace.json plugin/claude/.claude-plugin/plugin.json plugin/claude/.mcp.json \
