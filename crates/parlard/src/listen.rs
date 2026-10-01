@@ -17,7 +17,10 @@ pub enum Heard {
     Partial(String),
     /// The user is mid-phrase.
     Talking(bool),
-    Turn { text: String, heard: Option<String> },
+    Turn {
+        text: String,
+        heard: Option<String>,
+    },
     /// The user started talking over the agent.
     BargeIn,
 }
@@ -95,8 +98,10 @@ impl Models {
         let ort = models::ort_lib();
         let soft = |what: &str, e: anyhow::Error| eprintln!("{what} unavailable: {e:#}");
         let vad = crate::vad::Vad::load(&models::vad_model(), &ort).map_err(|e| soft("voice detector", e)).ok();
-        let turn = crate::turn::SmartTurn::load(&models::turn_model(), &ort).map_err(|e| soft("end-of-turn model", e)).ok();
-        let final_stt = crate::stt::Tdt::load(&models::final_dir(), &ort, 4).map_err(|e| soft("final-transcript model", e)).ok();
+        let turn =
+            crate::turn::SmartTurn::load(&models::turn_model(), &ort).map_err(|e| soft("end-of-turn model", e)).ok();
+        let final_stt =
+            crate::stt::Tdt::load(&models::final_dir(), &ort, 4).map_err(|e| soft("final-transcript model", e)).ok();
         eprintln!("speech models loaded in {:.1} s", t0.elapsed().as_secs_f32());
         Ok(Models { vad, turn, final_stt })
     }
@@ -113,7 +118,13 @@ enum Exit {
 /// the echo canceller's far end no longer lines up with the mic.
 const GAP: Duration = Duration::from_millis(200);
 
-pub fn spawn(frames: Frames, mut cfg: Config, agent_speaking: Arc<AtomicBool>, echo: Echo, tx: UnboundedSender<Heard>) -> Result<()> {
+pub fn spawn(
+    frames: Frames,
+    mut cfg: Config,
+    agent_speaking: Arc<AtomicBool>,
+    echo: Echo,
+    tx: UnboundedSender<Heard>,
+) -> Result<()> {
     std::thread::Builder::new().name("parlar-listen".into()).spawn(move || {
         let e = loop {
             // nothing loads until someone starts a conversation
@@ -125,7 +136,8 @@ pub fn spawn(frames: Frames, mut cfg: Config, agent_speaking: Arc<AtomicBool>, e
                 result => {
                     // missing models are a setup problem, not a crash: stay up, say why, and try
                     // again the next time a conversation starts
-                    let why = result.err().map(|e| format!("{e:#}")).unwrap_or_else(|| "no speech recognition model".into());
+                    let why =
+                        result.err().map(|e| format!("{e:#}")).unwrap_or_else(|| "no speech recognition model".into());
                     eprintln!("cannot listen: {why}; run parlard fetch or /parlar:setup");
                     let _ = tx.send(Heard::Level(0.0));
                     while cfg.gate.load(Ordering::SeqCst) {
@@ -362,7 +374,8 @@ fn dump_turn(dir: Option<&std::path::Path>, ev: &Heard, recent: &Recent, rate: u
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let audio: Vec<f32> = recent.buf.iter().copied().collect();
     let _ = crate::wav::write(&dir.join(format!("{stamp}.wav")), &audio, rate);
-    let _ = std::fs::write(dir.join(format!("{stamp}.txt")), format!("{}\n{}\n", text, heard.clone().unwrap_or_default()));
+    let _ =
+        std::fs::write(dir.join(format!("{stamp}.txt")), format!("{}\n{}\n", text, heard.clone().unwrap_or_default()));
 }
 
 /// The last few seconds of mic audio, for the end-of-turn model.
@@ -541,9 +554,9 @@ impl Endpointer {
 }
 
 const HOLD_TAIL: &[&str] = &[
-    "and", "so", "but", "or", "because", "um", "uh", "like", "the", "a", "an", "to", "of", "with",
-    "then", "wait", "if", "that", "is", "maybe", "also", "seems", "think", "want", "need", "it",
-    "this", "for", "in", "on", "my", "your", "we", "i", "you", "well", "okay", "ok", "hmm",
+    "and", "so", "but", "or", "because", "um", "uh", "like", "the", "a", "an", "to", "of", "with", "then", "wait",
+    "if", "that", "is", "maybe", "also", "seems", "think", "want", "need", "it", "this", "for", "in", "on", "my",
+    "your", "we", "i", "you", "well", "okay", "ok", "hmm",
 ];
 
 /// Extra wait before an open line whose words stopped changing is treated as finished.
@@ -627,15 +640,7 @@ mod tests {
     use super::*;
 
     fn line(text: &str, complete: bool) -> Line {
-        Line {
-            id: 0,
-            text: text.into(),
-            start: 0.0,
-            duration: 0.0,
-            complete,
-            text_changed: true,
-            latency_ms: 0,
-        }
+        Line { id: 0, text: text.into(), start: 0.0, duration: 0.0, complete, text_changed: true, latency_ms: 0 }
     }
 
     #[test]
@@ -730,7 +735,12 @@ mod tests {
         let ev = ep.tick(ms(4300));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "And the eval logs"));
         // the line is done with; the next one starts clean
-        ep.update(&[line("check the training run and the eval logs", true), line("open the plots", true)], ms(5000), false, "");
+        ep.update(
+            &[line("check the training run and the eval logs", true), line("open the plots", true)],
+            ms(5000),
+            false,
+            "",
+        );
         let ev = ep.tick(ms(6000));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Open the plots"));
     }
@@ -747,7 +757,6 @@ mod tests {
         e.0.lock().unwrap().until = Some(Instant::now());
         assert_eq!(e.current(), "");
     }
-
 }
 
 #[cfg(test)]
@@ -756,7 +765,15 @@ mod release_tests {
 
     #[test]
     fn turn_after_clock_release_is_not_lost() {
-        let l = |t: &str, c| Line { id: 0, text: t.into(), start: 0.0, duration: 0.0, complete: c, text_changed: true, latency_ms: 0 };
+        let l = |t: &str, c| Line {
+            id: 0,
+            text: t.into(),
+            start: 0.0,
+            duration: 0.0,
+            complete: c,
+            text_changed: true,
+            latency_ms: 0,
+        };
         let mut ep = Endpointer::default();
         let t0 = Instant::now();
         ep.update(&[l("first thing", true)], t0, false, "");

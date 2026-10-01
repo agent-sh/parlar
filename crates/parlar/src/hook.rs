@@ -189,9 +189,10 @@ fn wait(o: &Origin) -> Result<i32> {
 /// Add the conversation lines not yet printed as the hook's system message.
 fn show(c: &mut Client, o: &Origin, out: &mut Map<String, Value>) {
     if let Ok(Response::Transcript { lines }) = c.call(&Request::Transcript { origin: o.clone() }, Some(QUICK))
-        && !lines.is_empty() {
-            out.insert("systemMessage".into(), json!(lines.join("\n")));
-        }
+        && !lines.is_empty()
+    {
+        out.insert("systemMessage".into(), json!(lines.join("\n")));
+    }
 }
 
 fn items(r: Response) -> Vec<Utterance> {

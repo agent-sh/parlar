@@ -4,7 +4,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use sonora::config::{AdaptiveDigital, EchoCanceller, GainController2, HighPassFilter, NoiseSuppression, NoiseSuppressionLevel};
+use sonora::config::{
+    AdaptiveDigital, EchoCanceller, GainController2, HighPassFilter, NoiseSuppression, NoiseSuppressionLevel,
+};
 use sonora::{AudioProcessing, Config, StreamConfig};
 
 pub const RATE: u32 = 16000;
@@ -77,14 +79,17 @@ impl Aec {
             }),
             ..Default::default()
         };
-        let mut apm = AudioProcessing::builder()
-            .config(config)
-            .capture_config(sc)
-            .render_config(sc)
-            .build();
+        let mut apm = AudioProcessing::builder().config(config).capture_config(sc).render_config(sc).build();
         // a hint: output buffering plus capture latency on a typical desktop; AEC3 refines it
         let _ = apm.set_stream_delay_ms(60);
-        Aec { apm, far, pending: Vec::new(), far_frame: vec![0.0; FRAME], scratch: vec![0.0; FRAME], clean: vec![0.0; FRAME] }
+        Aec {
+            apm,
+            far,
+            pending: Vec::new(),
+            far_frame: vec![0.0; FRAME],
+            scratch: vec![0.0; FRAME],
+            clean: vec![0.0; FRAME],
+        }
     }
 
     /// Capture resumed after a gap: what the speaker played meanwhile no longer lines up with

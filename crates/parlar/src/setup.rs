@@ -20,7 +20,9 @@ fn claude_settings() -> PathBuf {
 pub fn claude() -> Result<()> {
     let path = claude_settings();
     let mut v: Value = match std::fs::read_to_string(&path) {
-        Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))?,
+        Ok(s) if !s.trim().is_empty() => {
+            serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))?
+        }
         Ok(_) => json!({}),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),

@@ -42,8 +42,7 @@ impl Queue {
                     backlog.push(l);
                 }
                 let line = backlog.remove(0);
-                let stale = line.kind == SayKind::Status
-                    && backlog.iter().any(|l| l.kind == SayKind::Status);
+                let stale = line.kind == SayKind::Status && backlog.iter().any(|l| l.kind == SayKind::Status);
                 if stale {
                     continue;
                 }
@@ -135,11 +134,8 @@ impl Engine {
 
 async fn run(argv: &[String], text: &str) -> anyhow::Result<()> {
     let (prog, args) = argv.split_first().ok_or_else(|| anyhow::anyhow!("empty voice command"))?;
-    let mut child = tokio::process::Command::new(prog)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()?;
+    let mut child =
+        tokio::process::Command::new(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(text.as_bytes()).await?;
     }

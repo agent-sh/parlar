@@ -158,9 +158,10 @@ impl State {
 
     fn find(&self, o: &Origin) -> Option<usize> {
         if let Some(sid) = &o.session
-            && let Some(i) = self.sessions.iter().position(|s| s.session.as_deref() == Some(sid)) {
-                return Some(i);
-            }
+            && let Some(i) = self.sessions.iter().position(|s| s.session.as_deref() == Some(sid))
+        {
+            return Some(i);
+        }
         // hooks always carry a session id, so an origin without one is an MCP server (older
         // servers do not send the mcp flag or the harness pid)
         let mcp = o.mcp || o.session.is_none();
@@ -208,19 +209,12 @@ impl State {
         if self.speaking {
             return Phase::Speaking;
         }
-        let working = self
-            .focus
-            .and_then(|k| self.sessions.iter().find(|s| s.key == k))
-            .is_some_and(|s| s.in_turn);
+        let working = self.focus.and_then(|k| self.sessions.iter().find(|s| s.key == k)).is_some_and(|s| s.in_turn);
         if working { Phase::Working } else { Phase::Ready }
     }
 
     fn emit_phase(&self) {
-        let _ = self.ui.send(Ui::Phase {
-            phase: self.phase(),
-            mic_muted: self.mic_muted,
-            voice_off: self.voice_off,
-        });
+        let _ = self.ui.send(Ui::Phase { phase: self.phase(), mic_muted: self.mic_muted, voice_off: self.voice_off });
     }
 
     /// Take the pending utterances for delivery, with the voice mode reminder on the first one
@@ -306,22 +300,21 @@ impl State {
             return (id, None);
         };
         let key = self.sessions[i].key;
-        let recent = self
-            .last_heard
-            .filter(|(_, k, at)| *k == key && at.elapsed() < CONTINUATION)
-            .map(|(prev, _, _)| prev);
+        let recent =
+            self.last_heard.filter(|(_, k, at)| *k == key && at.elapsed() < CONTINUATION).map(|(prev, _, _)| prev);
         self.note(i, format!("you: {text}"));
         // a follow-up to an utterance nobody has read yet joins it instead of trailing behind
         if let Some(prev) = recent
-            && let Some(last) = self.sessions[i].pending.last_mut().filter(|u| u.id == prev) {
-                last.text = format!("{} {}", last.text.trim_end(), text.trim());
-                if let Some(h) = heard {
-                    last.heard = Some(format!("{} {}", last.heard.clone().unwrap_or_default(), h).trim().to_string());
-                }
-                self.last_heard = Some((prev, key, std::time::Instant::now()));
-                eprintln!("heard u{prev} (continued): {text}");
-                return (prev, self.sessions[i].session.clone());
+            && let Some(last) = self.sessions[i].pending.last_mut().filter(|u| u.id == prev)
+        {
+            last.text = format!("{} {}", last.text.trim_end(), text.trim());
+            if let Some(h) = heard {
+                last.heard = Some(format!("{} {}", last.heard.clone().unwrap_or_default(), h).trim().to_string());
             }
+            self.last_heard = Some((prev, key, std::time::Instant::now()));
+            eprintln!("heard u{prev} (continued): {text}");
+            return (prev, self.sessions[i].session.clone());
+        }
         self.last_heard = Some((id, key, std::time::Instant::now()));
         let u = Utterance { id, text, heard, revises: recent, interrupted_after };
         eprintln!(
@@ -351,10 +344,11 @@ impl State {
 
 fn remind(s: &mut Session, items: &mut [Utterance]) {
     if s.remind
-        && let Some(first) = items.first_mut() {
-            s.remind = false;
-            first.text = format!("{}\n{}", format::ACTIVATED, first.text);
-        }
+        && let Some(first) = items.first_mut()
+    {
+        s.remind = false;
+        first.text = format!("{}\n{}", format::ACTIVATED, first.text);
+    }
 }
 
 /// A follow-up this soon after a delivered utterance is marked as its continuation.
@@ -373,10 +367,10 @@ struct Saved {
 
 impl Saved {
     fn path() -> std::path::PathBuf {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .filter(|d| !d.is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+        let base =
+            std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(
+                || std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"),
+            );
         base.join("parlar/state.json")
     }
 
@@ -726,9 +720,10 @@ impl Daemon {
                 let mut st = self.state.lock().await;
                 if let Some(a) = active {
                     if a && !st.active
-                        && let Some(k) = st.focus {
-                            st.sessions.iter_mut().filter(|s| s.key == k).for_each(|s| s.remind = true);
-                        }
+                        && let Some(k) = st.focus
+                    {
+                        st.sessions.iter_mut().filter(|s| s.key == k).for_each(|s| s.remind = true);
+                    }
                     // waiters stay armed while stopped, so starting again can wake an idle session
                     st.active = a;
                 }
@@ -788,9 +783,7 @@ impl Daemon {
         };
         match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
             Ok(Ok(WaitResult::Items(items))) => Response::Utterances { items, superseded: false },
-            Ok(Ok(WaitResult::Superseded)) | Ok(Err(_)) => {
-                Response::Utterances { items: vec![], superseded: true }
-            }
+            Ok(Ok(WaitResult::Superseded)) | Ok(Err(_)) => Response::Utterances { items: vec![], superseded: true },
             Err(_) => {
                 let mut st = self.state.lock().await;
                 for s in &mut st.sessions {
@@ -840,10 +833,8 @@ impl State {
     /// Drop sessions whose harness process is gone without saying goodbye (a crash, a kill).
     fn prune(&mut self) {
         let alive = |pid: u32| Path::new(&format!("/proc/{pid}")).exists();
-        let gone: Vec<usize> = (0..self.sessions.len())
-            .rev()
-            .filter(|&i| self.sessions[i].pid().is_some_and(|p| !alive(p)))
-            .collect();
+        let gone: Vec<usize> =
+            (0..self.sessions.len()).rev().filter(|&i| self.sessions[i].pid().is_some_and(|p| !alive(p))).collect();
         for i in gone {
             self.supersede(i);
             let key = self.sessions.remove(i).key;
@@ -934,7 +925,11 @@ mod tests {
     use crate::voice::{Engine, Queue};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>, req: &Request) -> Response {
+    async fn send(
+        w: &mut tokio::net::unix::OwnedWriteHalf,
+        r: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        req: &Request,
+    ) -> Response {
         let mut v = serde_json::to_vec(req).unwrap();
         v.push(b'\n');
         w.write_all(&v).await.unwrap();
@@ -949,7 +944,12 @@ mod tests {
         let (rd, mut wr) = a.into_split();
         let mut lines = BufReader::new(rd).lines();
         let o = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true };
-        let r = send(&mut wr, &mut lines, &Request::Attach { origin: o, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
+        let r = send(
+            &mut wr,
+            &mut lines,
+            &Request::Attach { origin: o, harness: Harness::Claude, cwd: String::new(), mcp: true },
+        )
+        .await;
         assert_eq!(r, Response::Attached { focused: false, active: false }, "attaching never takes focus");
         assert_eq!(d.state.lock().await.sessions.len(), 1);
         drop(wr);
@@ -963,13 +963,31 @@ mod tests {
     #[tokio::test]
     async fn turn_holding_waiter_is_released_when_the_conversation_stops() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
-        let on = |a| Request::Set { active: Some(a), mic_muted: None, voice_off: None, focus: None, input: None, output: None };
+        let on = |a| Request::Set {
+            active: Some(a),
+            mic_muted: None,
+            voice_off: None,
+            focus: None,
+            input: None,
+            output: None,
+        };
         d.handle(on(true)).await;
         let o = Origin { session: Some("cx".into()), pids: vec![1], ..Default::default() };
         d.handle(Request::Attach { origin: o.clone(), harness: Harness::Codex, cwd: String::new(), mcp: false }).await;
-        d.handle(Request::Set { active: None, mic_muted: None, voice_off: None, focus: Some("cx".into()), input: None, output: None }).await;
+        d.handle(Request::Set {
+            active: None,
+            mic_muted: None,
+            voice_off: None,
+            focus: Some("cx".into()),
+            input: None,
+            output: None,
+        })
+        .await;
         let d2 = d.clone();
-        let w = tokio::spawn(async move { d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await });
+        let w =
+            tokio::spawn(
+                async move { d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await },
+            );
         tokio::time::sleep(Duration::from_millis(50)).await;
         d.handle(on(false)).await;
         let r = tokio::time::timeout(Duration::from_secs(2), w).await.expect("released").unwrap();
@@ -979,12 +997,20 @@ mod tests {
     #[tokio::test]
     async fn prompts_in_other_sessions_never_move_focus() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
-        let set = |focus: Option<&str>, active| Request::Set { active, mic_muted: None, voice_off: None, focus: focus.map(str::to_string), input: None, output: None };
+        let set = |focus: Option<&str>, active| Request::Set {
+            active,
+            mic_muted: None,
+            voice_off: None,
+            focus: focus.map(str::to_string),
+            input: None,
+            output: None,
+        };
         d.handle(set(None, Some(true))).await;
         let me = Origin { session: Some("me".into()), ..Default::default() };
         let agent = Origin { session: Some("agent".into()), ..Default::default() };
         for o in [&me, &agent] {
-            d.handle(Request::Attach { origin: o.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
+            d.handle(Request::Attach { origin: o.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false })
+                .await;
         }
         d.handle(set(Some("me"), None)).await;
         d.handle(Request::Event { origin: agent.clone(), event: TurnEvent::TurnStart, tool: None }).await;
@@ -1006,21 +1032,43 @@ mod tests {
     #[tokio::test]
     async fn hook_session_survives_its_mcp_and_gets_utterances() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
-        d.handle(Request::Set { active: Some(true), mic_muted: None, voice_off: None, focus: None, input: None, output: None }).await;
+        d.handle(Request::Set {
+            active: Some(true),
+            mic_muted: None,
+            voice_off: None,
+            focus: None,
+            input: None,
+            output: None,
+        })
+        .await;
         let hook = Origin { session: Some("s1".into()), pids: vec![10, 4242, 7], harness_pid: Some(4242), mcp: false };
-        d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false }).await;
+        d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false })
+            .await;
         let (a, b) = UnixStream::pair().unwrap();
         let served = tokio::spawn(d.clone().conn(b));
         let (rd, mut wr) = a.into_split();
         let mut lines = BufReader::new(rd).lines();
         let mcp = Origin { session: None, pids: vec![4242], harness_pid: Some(4242), mcp: true };
-        send(&mut wr, &mut lines, &Request::Attach { origin: mcp, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
+        send(
+            &mut wr,
+            &mut lines,
+            &Request::Attach { origin: mcp, harness: Harness::Claude, cwd: String::new(), mcp: true },
+        )
+        .await;
         assert_eq!(d.state.lock().await.sessions.len(), 1, "MCP merged into the hook session");
         drop(wr);
         drop(lines);
         served.await.unwrap().unwrap();
         assert_eq!(d.state.lock().await.sessions.len(), 1);
-        d.handle(Request::Set { active: None, mic_muted: None, voice_off: None, focus: Some("s1".into()), input: None, output: None }).await;
+        d.handle(Request::Set {
+            active: None,
+            mic_muted: None,
+            voice_off: None,
+            focus: Some("s1".into()),
+            input: None,
+            output: None,
+        })
+        .await;
         d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
         match d.handle(Request::Claim { origin: hook, at_stop: false }).await {
             Response::Utterances { items, .. } => {
@@ -1032,11 +1080,23 @@ mod tests {
     }
 
     fn set(active: Option<bool>, focus: Option<&str>) -> Request {
-        Request::Set { active, mic_muted: None, voice_off: None, focus: focus.map(str::to_string), input: None, output: None }
+        Request::Set {
+            active,
+            mic_muted: None,
+            voice_off: None,
+            focus: focus.map(str::to_string),
+            input: None,
+            output: None,
+        }
     }
 
     async fn talking_to(d: &Daemon, sid: &str, harness_pid: u32) -> Origin {
-        let o = Origin { session: Some(sid.into()), pids: vec![1, harness_pid], harness_pid: Some(harness_pid), mcp: false };
+        let o = Origin {
+            session: Some(sid.into()),
+            pids: vec![1, harness_pid],
+            harness_pid: Some(harness_pid),
+            mcp: false,
+        };
         d.handle(Request::Attach { origin: o.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
         d.handle(set(Some(true), Some(sid))).await;
         o
@@ -1049,7 +1109,8 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let served = tokio::spawn(d.clone().conn(b));
         let (_rd, mut wr) = a.into_split();
-        let mut v = serde_json::to_vec(&Request::Wait { origin: o.clone(), timeout_ms: 60_000, holds_turn: false }).unwrap();
+        let mut v =
+            serde_json::to_vec(&Request::Wait { origin: o.clone(), timeout_ms: 60_000, holds_turn: false }).unwrap();
         v.push(b'\n');
         wr.write_all(&v).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1071,7 +1132,12 @@ mod tests {
         let outer_mcp = Origin { session: None, pids: vec![700, 1], harness_pid: Some(700), mcp: true };
         d.handle(Request::Attach { origin: outer_mcp, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
         // a nested `claude -p` (pid 900) runs from the outer session's shell
-        let inner = Origin { session: Some("inner".into()), pids: vec![901, 900, 702, 700, 1], harness_pid: Some(900), mcp: false };
+        let inner = Origin {
+            session: Some("inner".into()),
+            pids: vec![901, 900, 702, 700, 1],
+            harness_pid: Some(900),
+            mcp: false,
+        };
         d.handle(Request::Attach { origin: inner, harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
         let st = d.state.lock().await;
         assert_eq!(st.sessions.len(), 2, "the inner run gets its own session");
@@ -1083,8 +1149,10 @@ mod tests {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let old = talking_to(&d, "before-clear", 600).await;
         d.handle(Request::Detach { origin: old, rebind: true }).await;
-        let new = Origin { session: Some("after-clear".into()), pids: vec![1, 600], harness_pid: Some(600), mcp: false };
-        d.handle(Request::Attach { origin: new.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
+        let new =
+            Origin { session: Some("after-clear".into()), pids: vec![1, 600], harness_pid: Some(600), mcp: false };
+        d.handle(Request::Attach { origin: new.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false })
+            .await;
         d.handle(Request::Hear { text: "hi".into(), heard: None }).await;
         match d.handle(Request::Claim { origin: new, at_stop: false }).await {
             Response::Utterances { items, .. } => assert_eq!(items.len(), 1),

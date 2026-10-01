@@ -155,11 +155,7 @@ fn argmax(v: &[f32]) -> usize {
 
 /// The prediction network state is [layers, batch, hidden]; batch is dynamic.
 fn state_shape(dec: &Session) -> Result<(usize, usize)> {
-    let input = dec
-        .inputs
-        .iter()
-        .find(|i| i.name == "input_states_1")
-        .context("decoder has no input_states_1")?;
+    let input = dec.inputs.iter().find(|i| i.name == "input_states_1").context("decoder has no input_states_1")?;
     let ort::value::ValueType::Tensor { shape, .. } = &input.input_type else {
         bail!("input_states_1 is not a tensor");
     };

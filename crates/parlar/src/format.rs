@@ -22,7 +22,6 @@ user corrects themselves, the last version wins. Use the repo context to fix mis
 - say returns anything the user said meanwhile; treat it like a new [voice] message.
 - The plugin prints the spoken exchange in the session; do not restate it in text.";
 
-
 /// Reminder added when voice mode is switched on for a running session.
 pub const ACTIVATED: &str = "Voice mode is on. Talk to the user through the say tool as described \
 in the parlar server instructions: short spoken sentences, no code or paths.";
@@ -94,8 +93,19 @@ pub fn opening(text: &str) -> String {
 }
 
 const STOP_WORDS: &[&str] = &[
-    "stop", "wait", "hold on", "hold it", "cancel", "abort", "don't", "do not", "no no", "halt",
-    "pause", "never mind", "nevermind",
+    "stop",
+    "wait",
+    "hold on",
+    "hold it",
+    "cancel",
+    "abort",
+    "don't",
+    "do not",
+    "no no",
+    "halt",
+    "pause",
+    "never mind",
+    "nevermind",
 ];
 
 /// True when an utterance reads as a request to stop the current action. Only the opening words
@@ -104,8 +114,7 @@ const STOP_WORDS: &[&str] = &[
 pub fn is_stop(text: &str) -> bool {
     let t = text.trim().trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
     STOP_WORDS.iter().any(|w| {
-        t.strip_prefix(w)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()))
+        t.strip_prefix(w).is_some_and(|rest| rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()))
     })
 }
 
@@ -136,11 +145,7 @@ pub fn speakable(text: &str) -> String {
 
 fn strip_list_number(l: &str) -> &str {
     let digits = l.bytes().take_while(u8::is_ascii_digit).count();
-    if digits > 0 && l[digits..].starts_with(['.', ')']) {
-        l[digits + 1..].trim_start()
-    } else {
-        l
-    }
+    if digits > 0 && l[digits..].starts_with(['.', ')']) { l[digits + 1..].trim_start() } else { l }
 }
 
 fn clean_words(l: &str) -> String {
@@ -181,11 +186,7 @@ fn clean_words(l: &str) -> String {
 fn shorten(w: &str) -> String {
     let trail: String = w.chars().rev().take_while(|c| ",.;:!?".contains(*c)).collect();
     let core = &w[..w.len() - trail.len()];
-    let core = if core.contains('/') && !core.ends_with('/') {
-        core.rsplit('/').next().unwrap_or(core)
-    } else {
-        core
-    };
+    let core = if core.contains('/') && !core.ends_with('/') { core.rsplit('/').next().unwrap_or(core) } else { core };
     format!("{core}{}", trail.chars().rev().collect::<String>())
 }
 

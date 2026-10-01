@@ -89,10 +89,7 @@ fn find(host: &cpal::Host, want: Option<&str>, input: bool) -> Result<cpal::Devi
         let devs = devices(host, input)?;
         let by_id = devs.iter().position(|d| dev_id(d) == w);
         let by_name = || devs.iter().position(|d| d.to_string().contains(w));
-        return by_id
-            .or_else(by_name)
-            .map(|i| devs[i].clone())
-            .ok_or_else(|| anyhow!("no audio device matching {w}"));
+        return by_id.or_else(by_name).map(|i| devs[i].clone()).ok_or_else(|| anyhow!("no audio device matching {w}"));
     }
     let d = if input { host.default_input_device() } else { host.default_output_device() };
     d.ok_or_else(|| anyhow!("no default {} device", if input { "input" } else { "output" }))

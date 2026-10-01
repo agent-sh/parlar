@@ -97,7 +97,9 @@ pub enum Request {
         at_stop: bool,
     },
     /// Take pending utterances whose text reads as a stop request, leave the rest.
-    ClaimStop { origin: Origin },
+    ClaimStop {
+        origin: Origin,
+    },
     /// Block until an utterance for this session is ready, or until the timeout.
     Wait {
         origin: Origin,
@@ -128,7 +130,9 @@ pub enum Request {
     },
     /// Lines not yet shown in this session's terminal: what the user said and what the agent
     /// spoke. Hooks print them as a system message, so the transcript costs the model nothing.
-    Transcript { origin: Origin },
+    Transcript {
+        origin: Origin,
+    },
     /// /parlar:talk: attach the session if needed, unmute, start the conversation and give this
     /// session voice focus.
     Talk {
@@ -242,21 +246,8 @@ pub struct Device {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "ui", rename_all = "snake_case")]
 pub enum Ui {
-    Phase {
-        phase: Phase,
-        mic_muted: bool,
-        voice_off: bool,
-    },
-    Levels {
-        user: f32,
-        agent: f32,
-    },
-    Tool {
-        ok: bool,
-        name: Option<String>,
-    },
-    Caption {
-        who: String,
-        text: String,
-    },
+    Phase { phase: Phase, mic_muted: bool, voice_off: bool },
+    Levels { user: f32, agent: f32 },
+    Tool { ok: bool, name: Option<String> },
+    Caption { who: String, text: String },
 }

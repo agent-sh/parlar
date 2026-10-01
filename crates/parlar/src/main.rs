@@ -87,7 +87,9 @@ enum Ctl {
     /// Captions only.
     VoiceOff,
     /// Give voice focus to a session id.
-    Focus { session: String },
+    Focus {
+        session: String,
+    },
     /// Start talking to a session: attach it if needed, unmute, start, give it focus.
     Talk {
         #[arg(long)]
@@ -98,9 +100,13 @@ enum Ctl {
     /// List audio devices.
     Devices,
     /// Switch the mic to a device id from `devices`.
-    Input { id: String },
+    Input {
+        id: String,
+    },
     /// Switch the speaker to a device id from `devices`.
-    Output { id: String },
+    Output {
+        id: String,
+    },
     /// Print indicator events as JSON lines.
     Watch,
 }
@@ -170,14 +176,8 @@ fn ctl(cmd: Ctl) -> Result<()> {
         input: None,
         output: None,
     };
-    let dev = |input, output| Request::Set {
-        active: None,
-        mic_muted: None,
-        voice_off: None,
-        focus: None,
-        input,
-        output,
-    };
+    let dev =
+        |input, output| Request::Set { active: None, mic_muted: None, voice_off: None, focus: None, input, output };
     let req = match cmd {
         Ctl::State => Request::State,
         Ctl::Hear { text, heard } => Request::Hear { text, heard },

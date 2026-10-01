@@ -151,8 +151,8 @@ fn main() -> Result<()> {
 }
 
 async fn serve(cli: Cli) -> Result<()> {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use parlar::proto::Ui;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kokoro = None;
@@ -225,9 +225,11 @@ async fn serve(cli: Cli) -> Result<()> {
                         last = cwd.clone();
                         version += 1;
                         let v = match cwd {
-                            Some(dir) => tokio::task::spawn_blocking(move || vocab::Vocab::from_dir(std::path::Path::new(&dir), version))
-                                .await
-                                .unwrap_or_default(),
+                            Some(dir) => tokio::task::spawn_blocking(move || {
+                                vocab::Vocab::from_dir(std::path::Path::new(&dir), version)
+                            })
+                            .await
+                            .unwrap_or_default(),
                             None => vocab::Vocab::empty(version),
                         };
                         eprintln!("vocabulary: {} terms", v.terms.len());
