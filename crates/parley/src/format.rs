@@ -43,7 +43,7 @@ pub fn utterances(items: &[Utterance]) -> String {
         out.push_str(&tag);
         out.push(' ');
         out.push_str(u.text.trim());
-        if let Some(cut) = &u.interrupted_after {
+        if let Some(cut) = u.interrupted_after.as_ref().filter(|c| !c.trim().is_empty()) {
             out.push_str(&format!("\n(they talked over you; you had said: \"{}\")", cut.trim()));
         }
         if let Some(heard) = &u.heard {

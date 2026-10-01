@@ -49,11 +49,14 @@ impl Speaker for Kokoro {
         let sentences = parley_moonshine::split_utterances("en_us", text).unwrap_or_else(|_| vec![text.to_string()]);
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel::<(String, Vec<f32>, u32)>();
+        let (tts_ref, sentences_ref, stop_ref) = (&*tts, &sentences, &stop);
         std::thread::scope(|scope| {
             // whole sentences, synthesized ahead on their own thread: one call per sentence has no
-            // seams inside it, and the speaker never waits on the synthesizer mid-sentence
-            scope.spawn(|| {
-                for s in &sentences {
+            // seams inside it, and the speaker never waits on the synthesizer mid-sentence. The
+            // sender moves into the thread, so the player sees the end when the last one is made.
+            scope.spawn(move || {
+                let (tts, sentences, stop) = (tts_ref, sentences_ref, stop_ref);
+                for s in sentences {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
