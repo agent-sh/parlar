@@ -629,7 +629,7 @@ fn service() -> Result<()> {
   <key>Label</key><string>dev.agent-sh.parlar-overlay</string>
   <key>ProgramArguments</key><array><string>{exe}</string></array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>StandardOutPath</key><string>{log}</string>
