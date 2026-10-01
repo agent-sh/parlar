@@ -2,7 +2,7 @@
 'use strict';
 
 // Fetches the parlar release tarball for this machine, checks its sha256, and puts the native
-// parlar and parlard in npm/bin/native/ for the shell shims next to it.
+// parlar and parlard in npm/bin/native/, which launch.js and the plugin launchers run.
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');

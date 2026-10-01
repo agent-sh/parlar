@@ -1,10 +1,20 @@
 #!/bin/sh
 # Runs the installed parlar. Before parlar is installed the plugin must stay out of the way:
 # hooks exit quietly, and /parlar:setup explains what to install.
+found=$(command -v parlar 2>/dev/null)
+# an npm install puts a Node launcher on PATH; run the native binary beside it instead, so a hook
+# does not pay for starting Node
+npm_native=""
+if [ -n "$found" ]; then
+    real=$(readlink -f "$found" 2>/dev/null || echo "$found")
+    case "$real" in
+        */npm/bin/parlar.js) npm_native=$(dirname "$real")/native/parlar ;;
+    esac
+fi
 # the .exe names are Windows under Git Bash, which Claude Code runs hooks through
 for p in "${PARLAR_BIN:-}" "$HOME/.local/bin/parlar" "$HOME/.cargo/bin/parlar" "$HOME/.cargo/bin/parlar.exe" \
-    "$(command -v parlar 2>/dev/null)"; do
-    if [ -n "$p" ] && [ -x "$p" ] && [ "$p" != "$0" ]; then
+    "$npm_native" "$npm_native.exe" "$found"; do
+    if [ -n "$p" ] && [ "$p" != ".exe" ] && [ -x "$p" ] && [ "$p" != "$0" ]; then
         exec "$p" "$@"
     fi
 done

@@ -76,26 +76,36 @@ jobs:
           target\release\parlar.exe ctl state
           Stop-Process -Id $d.Id
           Get-Content parlard.log
-      - name: plugin launcher (.cmd) runs parlar, and stays quiet without it
+      - name: plugin launcher (.cmd) runs parlar, passes its exit code, stays quiet without it
         shell: cmd
         run: |
           set "PARLAR_BIN=%CD%\target\release\parlar.exe"
           call plugin\claude\bin\parlar.cmd --version || exit /b 1
+          rem parlard is not running now, so ctl state must fail through the launcher
+          call plugin\claude\bin\parlar.cmd ctl state
+          if not errorlevel 1 exit /b 1
           set "PARLAR_BIN="
           set "PATH=C:\Windows\System32"
           echo {} | call plugin\claude\bin\parlar.cmd hook prompt || exit /b 1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: npm package installs on Windows
-        shell: bash
+      - name: npm package installs on Windows and runs without sh
+        shell: pwsh
         run: |
-          prefix="$RUNNER_TEMP/npm-prefix"
-          package="$(npm pack --pack-destination "$RUNNER_TEMP" --silent)"
-          PARLAR_NPM_LOCAL_DIR="$PWD/target/release" npm install -g --prefix "$prefix" --foreground-scripts "$RUNNER_TEMP/$package"
-          ls "$prefix"
-          "$prefix/parlar" --version
-          "$prefix/parlard" --version
+          $prefix = "$env:RUNNER_TEMP\npm-prefix"
+          $package = npm pack --pack-destination $env:RUNNER_TEMP --silent
+          $env:PARLAR_NPM_LOCAL_DIR = "$PWD\target\release"
+          npm install -g --prefix $prefix --foreground-scripts "$env:RUNNER_TEMP\$package"
+          # no Git, no sh: only the npm prefix, node and Windows itself
+          $env:PATH = "$prefix;$(Split-Path (Get-Command node).Source);C:\Windows\System32"
+          & "$prefix\parlar.cmd" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$prefix\parlard.cmd" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # the plugin launcher finds the native binary inside the npm package
+          cmd /c "plugin\claude\bin\parlar.cmd --version"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
   msrv:
     name: rust-version
@@ -177,7 +187,7 @@ jobs:
         with:
           node-version: 24
       - run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
-      - run: node --check npm/install.js && sh -n npm/bin/parlar && sh -n npm/bin/parlard
+      - run: node --check npm/install.js && node --check npm/bin/launch.js && node --check npm/bin/parlar.js && node --check npm/bin/parlard.js
       - run: cargo build --locked
       - name: Install the packed package against the local build
         run: |
