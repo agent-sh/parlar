@@ -655,11 +655,13 @@ const FILLERS: &[&str] = &["um", "uh", "uhm", "umm", "erm", "er", "hmm", "hm", "
 
 /// Drop filler words. Self-repairs stay; the model resolves them with the heard text beside.
 pub fn clean(raw: &str) -> String {
+    // the fillers are English: "um" is a word in Portuguese and German
+    let english = crate::config::get().language().english;
     let kept: Vec<&str> = raw
         .split_whitespace()
         .filter(|w| {
             let bare = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-            !FILLERS.contains(&bare.as_str())
+            !english || !FILLERS.contains(&bare.as_str())
         })
         .collect();
     let mut s = kept.join(" ");

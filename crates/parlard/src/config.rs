@@ -172,10 +172,11 @@ impl Config {
         {
             bail!("the {model} recognizer does not understand {:?}; use {PARAKEET} or another model", lang.code);
         }
-        if let Some(e) = self.recognizer.encoder.as_deref()
-            && !["int8", "exact4x2", "fp32"].contains(&e)
-        {
-            bail!("encoder {e:?}: use int8, exact4x2 or fp32");
+        if let Some(e) = self.recognizer.encoder.as_deref() {
+            let ok = crate::models::encoders(&model);
+            if !ok.contains(&e) {
+                bail!("encoder {e:?}: {model} has {}", ok.join(", "));
+            }
         }
         if lang.tts.is_none() && self.voice.command.is_empty() {
             bail!("libmoonshine has no voice for {:?}; set [voice] command to a program that speaks it", lang.code);
@@ -212,6 +213,7 @@ mod tests {
         assert!(err("language = \"pl\"").contains("no voice"));
         assert!(err("language = \"xx\"").contains("not one parlar knows"));
         assert!(err("[recognizer]\nencoder = \"int4\"").contains("encoder"));
+        assert!(err("language = \"es\"\n[recognizer]\nencoder = \"exact4x2\"").contains("has int8, fp32"));
         assert!(parse("languge = \"es\"").is_err(), "unknown keys are typos");
         parse("language = \"pl\"\n[voice]\ncommand = [\"espeak-ng\", \"-v\", \"pl\"]").unwrap().check().unwrap();
     }

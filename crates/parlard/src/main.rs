@@ -183,7 +183,12 @@ async fn serve(cli: Cli) -> Result<()> {
 
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kokoro = None;
-    let voice_cmd = if cli.voice_cmd.is_empty() { config::get().voice.command.clone() } else { cli.voice_cmd.clone() };
+    // --silent wins over a voice command from config.toml (test harnesses rely on it)
+    let voice_cmd = match (cli.voice_cmd.is_empty(), cli.silent) {
+        (false, _) => cli.voice_cmd.clone(),
+        (true, true) => Vec::new(),
+        (true, false) => config::get().voice.command.clone(),
+    };
     let engine = if !voice_cmd.is_empty() {
         voice::Engine::Command(voice_cmd)
     } else if cli.silent {
