@@ -9,6 +9,7 @@ version.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 cpal = { version = "0.18", features = ["pipewire"] }
+crc32c = "0.6"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"] }
 parley = { path = "../parley" }
 parley-moonshine = { path = "../parley-moonshine" }

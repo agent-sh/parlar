@@ -42,7 +42,7 @@ impl Client {
     /// None when parleyd is not running. Callers treat that as voice mode off.
     pub fn connect() -> Option<Client> {
         let s = UnixStream::connect(socket_path()).ok()?;
-        s.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+        s.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
         let wr = s.try_clone().ok()?;
         Some(Client { rd: BufReader::new(s), wr })
     }
@@ -94,6 +94,22 @@ fn parent_of(pid: u32) -> Option<u32> {
     rest.split(' ').nth(1)?.parse().ok()
 }
 
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "tcsh", "csh", "busybox"];
+
+fn comm(pid: u32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+/// Origin of a hook or ctl command: the harness is the nearest ancestor that is not a shell
+/// (harnesses run hook commands through `sh -c` or `$SHELL -lc`).
 pub fn origin(session: Option<String>) -> Origin {
-    Origin { session, pids: ancestors() }
+    let pids = ancestors();
+    let harness_pid = pids.iter().copied().find(|&p| !SHELLS.contains(&comm(p).as_str()));
+    Origin { session, pids, harness_pid, mcp: false }
+}
+
+/// Origin of the MCP server: the harness is its parent.
+pub fn mcp_origin(session: Option<String>) -> Origin {
+    let pids = ancestors();
+    Origin { session, harness_pid: pids.first().copied(), pids, mcp: true }
 }

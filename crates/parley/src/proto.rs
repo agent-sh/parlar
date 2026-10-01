@@ -58,6 +58,14 @@ pub struct Origin {
     /// Ancestor process ids, nearest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pids: Vec<u32>,
+    /// The harness process: the MCP server's parent, or a hook's nearest ancestor that is not a
+    /// shell. Matching uses this one pid, never the whole ancestry, so a nested harness run from
+    /// a session's shell is never mistaken for that session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_pid: Option<u32>,
+    /// The request comes from the session's MCP server.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mcp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,9 +81,21 @@ pub enum Request {
         #[serde(default)]
         mcp: bool,
     },
-    Detach { origin: Origin },
+    Detach {
+        origin: Origin,
+        /// The harness cleared the conversation and starts a new session id in the same process
+        /// (`/clear`): keep the session and its focus for the next SessionStart to rebind.
+        #[serde(default)]
+        rebind: bool,
+    },
     /// Take every pending utterance for this session.
-    Claim { origin: Origin },
+    Claim {
+        origin: Origin,
+        /// Claimed by the Stop hook to continue the turn; the idle waiter that starts at the same
+        /// Stop must not arm, or speech meant for the continued turn would wake it instead.
+        #[serde(default)]
+        at_stop: bool,
+    },
     /// Take pending utterances whose text reads as a stop request, leave the rest.
     ClaimStop { origin: Origin },
     /// Block until an utterance for this session is ready, or until the timeout.
@@ -105,6 +125,17 @@ pub enum Request {
         origin: Origin,
         #[serde(default)]
         last_message: Option<String>,
+    },
+    /// Lines not yet shown in this session's terminal: what the user said and what the agent
+    /// spoke. Hooks print them as a system message, so the transcript costs the model nothing.
+    Transcript { origin: Origin },
+    /// /parley:talk: attach the session if needed, unmute, start the conversation and give this
+    /// session voice focus.
+    Talk {
+        origin: Origin,
+        harness: Harness,
+        #[serde(default)]
+        cwd: String,
     },
     /// Inject an utterance as if it had been spoken. Stand-in for the mic during development.
     Hear {
@@ -191,6 +222,9 @@ pub enum Response {
     Devices {
         inputs: Vec<Device>,
         outputs: Vec<Device>,
+    },
+    Transcript {
+        lines: Vec<String>,
     },
     Error {
         message: String,

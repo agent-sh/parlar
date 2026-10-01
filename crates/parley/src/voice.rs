@@ -97,8 +97,11 @@ impl Engine {
         // by the daemon's level task
         let metered = matches!(self, Engine::Speaker(_));
         let pulse = tokio::spawn(async move {
+            if metered {
+                return;
+            }
             let mut t = 0f32;
-            while !metered {
+            loop {
                 t += 0.033;
                 let v = ((t * 4.8 * std::f32::consts::TAU).sin().abs() * 0.8).min(1.0);
                 let _ = ui.send(Ui::Levels { user: 0.0, agent: v });

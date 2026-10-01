@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use parley_moonshine::{ARCH_SMALL_STREAMING, Transcriber};
+use anyhow::{Context, Result, anyhow};
+use parley_moonshine::{ARCH_SMALL_STREAMING, Stream, Transcriber};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::audio::{self, Frames};
@@ -37,25 +37,83 @@ pub struct Config {
     pub vocab: Arc<Mutex<Vocab>>,
 }
 
-/// What the agent is saying right now, so its own voice picked up by the mic is not mistaken
-/// for the user. Stand-in until echo cancellation is in the capture path.
-pub type Echo = Arc<Mutex<String>>;
+/// What the agent is saying, so its own voice picked up by the mic is not mistaken for the user.
+/// The text outlives playback by `ECHO_TAIL`: the end of a line is still in the device and the
+/// recognizer when the speaker buffer drains.
+#[derive(Clone, Default)]
+pub struct Echo(Arc<Mutex<EchoText>>);
 
-pub fn spawn(
-    frames: Frames,
-    cfg: Config,
-    agent_speaking: Arc<AtomicBool>,
-    echo: Echo,
-    tx: UnboundedSender<Heard>,
-) -> Result<()> {
+#[derive(Default)]
+struct EchoText {
+    text: String,
+    /// Set when playback ended; the text counts as echo until then.
+    until: Option<Instant>,
+}
+
+const ECHO_TAIL: Duration = Duration::from_millis(1500);
+
+impl Echo {
+    /// A line starts playing. The previous line's tail may still be coming in, so its text stays.
+    pub fn start(&self, text: &str) {
+        let mut e = self.0.lock().unwrap();
+        if e.until.is_some_and(|u| Instant::now() < u) && !e.text.is_empty() {
+            e.text.push(' ');
+            e.text.push_str(text);
+        } else {
+            e.text = text.to_string();
+        }
+        e.until = None;
+    }
+
+    /// Playback ended.
+    pub fn end(&self) {
+        self.0.lock().unwrap().until = Some(Instant::now() + ECHO_TAIL);
+    }
+
+    /// What may still come back through the mic; empty when nothing does.
+    pub fn current(&self) -> String {
+        let mut e = self.0.lock().unwrap();
+        if e.until.is_some_and(|u| Instant::now() >= u) {
+            e.text.clear();
+            e.until = None;
+        }
+        e.text.clone()
+    }
+}
+
+/// Mic audio missing for longer than this (the gate was closed, or the queue overflowed) means
+/// the echo canceller's far end no longer lines up with the mic.
+const GAP: Duration = Duration::from_millis(200);
+
+pub fn spawn(frames: Frames, cfg: Config, agent_speaking: Arc<AtomicBool>, echo: Echo, tx: UnboundedSender<Heard>) -> Result<()> {
     let opts: Vec<(&str, &str)> = if cfg.partials { vec![] } else { vec![("decode_incomplete_lines", "false")] };
     let t = Transcriber::load(&crate::models::stt_dir(), ARCH_SMALL_STREAMING, &opts)?;
     std::thread::Builder::new().name("parley-listen".into()).spawn(move || {
-        if let Err(e) = run(t, frames, cfg, agent_speaking, echo, tx) {
-            eprintln!("listener stopped: {e:#}");
-        }
+        let e = match run(t, frames, cfg, agent_speaking, echo, &tx) {
+            Ok(()) => anyhow!("mic audio ended"),
+            Err(e) => e,
+        };
+        // a daemon that went deaf looks alive; exit so the service manager restarts it
+        eprintln!("listener stopped: {e:#}; exiting");
+        let _ = tx.send(Heard::Level(0.0));
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = std::fs::remove_file(parley::client::socket_path());
+        std::process::exit(1);
     })?;
     Ok(())
+}
+
+fn open_stream(t: &Transcriber) -> Result<Stream<'_>> {
+    let mut s = t.stream()?;
+    s.start()?;
+    Ok(s)
+}
+
+fn recognize(s: &mut Stream<'_>, audio: &[f32], rate: u32) -> Result<Vec<parley_moonshine::Line>> {
+    if !audio.is_empty() {
+        s.add_audio(audio, rate as i32)?;
+    }
+    s.transcribe()
 }
 
 fn run(
@@ -64,41 +122,49 @@ fn run(
     mut cfg: Config,
     agent_speaking: Arc<AtomicBool>,
     echo: Echo,
-    tx: UnboundedSender<Heard>,
+    tx: &UnboundedSender<Heard>,
 ) -> Result<()> {
-    let mut s = t.stream()?;
-    s.start()?;
+    let mut s = open_stream(&t)?;
     let chunk = frames.rate as usize * cfg.every_ms / 1000;
-    let mut buf: Vec<f32> = Vec::with_capacity(chunk * 2);
+    let mut feed = Feed::new(chunk, frames.rate as usize / 2);
     let mut ep = Endpointer::default();
-    let mut vocab_seen = 0;
+    let mut vocab = Vocab::default();
+    // None so the command-line keyterms apply before any repo vocabulary arrives
+    let mut vocab_seen: Option<u64> = None;
     let mut last_level = Instant::now();
+    let mut last_rx = Instant::now();
     let mut peak = 0f32;
     let mut recent = Recent::new(frames.rate as usize * 8);
-    let mut gate = crate::vad::Gate::new();
-    // audio from just before the voice detector fired, so the first word is not clipped
-    let mut preroll = Recent::new(frames.rate as usize / 2);
     loop {
+        let mut ready = None;
         match frames.rx.recv_timeout(Duration::from_millis(30)) {
-            Ok(f) => {
+            Ok(mut f) => {
+                // whatever queued up meanwhile goes through in one piece
+                while let Ok(more) = frames.rx.try_recv() {
+                    f.extend(more);
+                }
+                let got = Duration::from_secs_f64(f.len() as f64 / frames.rate as f64);
+                if last_rx.elapsed().saturating_sub(got) > GAP
+                    && let Some(a) = cfg.aec.as_mut() {
+                        a.resume();
+                    }
+                last_rx = Instant::now();
                 let f = match cfg.aec.as_mut() {
                     Some(a) => a.process(&f),
                     None => f,
                 };
                 peak = peak.max(audio::rms(&f));
                 recent.push(&f);
-                let opened = match cfg.vad.as_mut() {
-                    Some(v) => gate.update(&v.push(&f)?),
-                    None => false,
-                };
-                if cfg.vad.is_none() || gate.is_open() {
-                    if opened {
-                        buf.extend(preroll.buf.drain(..));
+                let probs = match cfg.vad.as_mut().map(|v| v.push(&f)) {
+                    Some(Ok(p)) => Some(p),
+                    Some(Err(e)) => {
+                        eprintln!("voice detector failed, the recognizer now runs on all audio: {e:#}");
+                        cfg.vad = None;
+                        None
                     }
-                    buf.extend_from_slice(&f);
-                } else {
-                    preroll.push(&f);
-                }
+                    None => None,
+                };
+                ready = feed.push(&f, probs.as_deref());
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
@@ -108,20 +174,25 @@ fn run(
             peak = 0.0;
             last_level = Instant::now();
         }
-        let v = cfg.vocab.lock().unwrap().clone();
-        if v.version != vocab_seen {
-            vocab_seen = v.version;
-            let mut terms = v.keyterms();
+        let fresh = {
+            let v = cfg.vocab.lock().unwrap();
+            (Some(v.version) != vocab_seen).then(|| v.clone())
+        };
+        if let Some(v) = fresh {
+            let first = vocab_seen.replace(v.version).is_none();
+            vocab = v;
+            let mut terms = vocab.keyterms();
             if let Some(k) = &cfg.keyterms {
                 terms = if terms.is_empty() { k.clone() } else { format!("{k},{terms}") };
             }
-            if let Err(e) = t.set_keyterms(&terms) {
-                eprintln!("keyterms: {e:#}");
-            }
+            if !(first && terms.is_empty())
+                && let Err(e) = t.set_keyterms(&terms) {
+                    eprintln!("keyterms: {e:#}");
+                }
         }
         let fix = |ev: Heard| match ev {
             Heard::Turn { text, heard } => {
-                let joined = v.join_dots(&text);
+                let joined = vocab.join_dots(&text);
                 let heard = heard.or_else(|| (joined != text).then(|| text.clone()));
                 Heard::Turn { text: joined, heard }
             }
@@ -138,20 +209,65 @@ fn run(
             eprintln!("turn score {p:.2}: {}", ep.text);
             ep.set_score(p);
         }
-        if buf.len() >= chunk {
-            s.add_audio(&buf, frames.rate as i32)?;
-            buf.clear();
-            let lines = s.transcribe()?;
-            let speaking = agent_speaking.load(Ordering::SeqCst);
-            let said = echo.lock().unwrap().clone();
-            for ev in ep.update(&lines, Instant::now(), speaking, &said) {
-                let _ = tx.send(fix(ev));
-            }
-        } else {
+        let Some(audio) = ready else {
             for ev in ep.tick(Instant::now()) {
                 let _ = tx.send(fix(ev));
             }
+            continue;
+        };
+        let lines = match recognize(&mut s, &audio, frames.rate) {
+            Ok(l) => l,
+            Err(e) => {
+                // a fresh stream starts its lines from zero, so the turn state starts over too
+                eprintln!("recognizer: {e:#}; starting a new stream");
+                s = open_stream(&t).context("new recognizer stream")?;
+                if ep.talking {
+                    let _ = tx.send(Heard::Talking(false));
+                }
+                ep = Endpointer::default();
+                recognize(&mut s, &audio, frames.rate).context("recognizer failed on a new stream")?
+            }
+        };
+        let speaking = agent_speaking.load(Ordering::SeqCst);
+        let said = echo.current();
+        for ev in ep.update(&lines, Instant::now(), speaking, &said) {
+            let _ = tx.send(fix(ev));
         }
+    }
+}
+
+/// Decides which mic audio reaches the recognizer, and when.
+struct Feed {
+    chunk: usize,
+    buf: Vec<f32>,
+    gate: crate::vad::Gate,
+    /// Audio from just before the voice detector fired, so the first word is not clipped.
+    preroll: Recent,
+}
+
+impl Feed {
+    fn new(chunk: usize, preroll: usize) -> Feed {
+        Feed { chunk, buf: Vec::with_capacity(chunk * 2), gate: crate::vad::Gate::new(), preroll: Recent::new(preroll) }
+    }
+
+    /// One cleaned frame and its voice probabilities (None: no voice detector, all audio passes).
+    /// Returns audio for the recognizer once a chunk is full, and also when the gate closes: the
+    /// rest (possibly empty) goes in right away so the open line can finish now, not the next
+    /// time someone talks.
+    fn push(&mut self, f: &[f32], probs: Option<&[f32]>) -> Option<Vec<f32>> {
+        if let Some(p) = probs {
+            let was_open = self.gate.is_open();
+            let opened = self.gate.update(p);
+            if !self.gate.is_open() {
+                self.preroll.push(f);
+                return was_open.then(|| std::mem::take(&mut self.buf));
+            }
+            if opened {
+                self.buf.extend(self.preroll.buf.drain(..));
+            }
+        }
+        self.buf.extend_from_slice(f);
+        (self.buf.len() >= self.chunk).then(|| std::mem::take(&mut self.buf))
     }
 }
 
@@ -191,6 +307,11 @@ struct Endpointer {
     done: usize,
     /// Line count at the last update.
     seen: usize,
+    /// A line that was still open when its words were delivered (they had stopped changing):
+    /// its index and how many of its words went out. Later words in it make the next turn.
+    sent: Option<(usize, usize)>,
+    /// Word count of the last line at the last update, when that line was still open.
+    open_words: Option<usize>,
     text: String,
     complete: bool,
     changed: Option<Instant>,
@@ -204,17 +325,34 @@ impl Endpointer {
     fn update(&mut self, lines: &[parley_moonshine::Line], now: Instant, agent_speaking: bool, echo: &str) -> Vec<Heard> {
         let mut out = Vec::new();
         self.seen = lines.len();
-        if agent_speaking {
-            // the mic heard the agent: drop those lines once they settle
-            while self.done < lines.len() && lines[self.done].complete && is_echo(&lines[self.done].text, echo) {
-                self.done += 1;
-            }
+        // `echo` is what the agent is saying, or just finished saying: the mic heard the agent,
+        // so drop those lines once they settle
+        while self.done < lines.len() && lines[self.done].complete && is_echo(&lines[self.done].text, echo) {
+            self.done += 1;
         }
-        let open = &lines[self.done.min(lines.len())..];
-        let text = open.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        if self.sent.is_some_and(|(at, _)| at < self.done) {
+            self.sent = None;
+        }
+        let start = self.done.min(lines.len());
+        let open = &lines[start..];
+        let fresh: Vec<String> = open
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let skip = match self.sent {
+                    Some((at, n)) if at == start + i => n,
+                    _ => 0,
+                };
+                l.text.split_whitespace().skip(skip).collect::<Vec<_>>().join(" ")
+            })
+            .collect();
+        let text = fresh.iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
         let complete = open.iter().all(|l| l.complete);
-        let talking = open.last().is_some_and(|l| !l.complete);
-        if agent_speaking && !text.is_empty() && is_echo(&text, echo) {
+        // an open line whose words all went out already is noise holding the line, not talking
+        let held = self.sent.is_some_and(|(at, _)| at + 1 == lines.len()) && fresh.last().is_some_and(|t| t.is_empty());
+        let talking = open.last().is_some_and(|l| !l.complete) && !held;
+        self.open_words = lines.last().filter(|l| !l.complete).map(|l| words(&l.text));
+        if !text.is_empty() && is_echo(&text, echo) {
             return out;
         }
         if talking != self.talking {
@@ -272,8 +410,18 @@ impl Endpointer {
             return vec![];
         }
         let heard = std::mem::take(&mut self.text);
-        // every open line was complete at the last update, so the next turn starts after them
-        self.done = self.seen;
+        match self.open_words.filter(|_| !self.complete) {
+            // the last line is still open: the next turn is whatever it adds after these words
+            Some(n) if self.seen > 0 => {
+                self.done = self.seen - 1;
+                self.sent = Some((self.done, n));
+            }
+            // every open line was complete at the last update, so the next turn starts after them
+            _ => {
+                self.done = self.seen;
+                self.sent = None;
+            }
+        }
         self.reset();
         let text = clean(&heard);
         if text.is_empty() {
@@ -464,6 +612,56 @@ mod tests {
         let ev = ep.update(&[line("remove the copy in app", true), line("wait stop that", false)], t0, true, said);
         assert!(ev.iter().any(|e| matches!(e, Heard::BargeIn)));
         assert!(ev.iter().any(|e| matches!(e, Heard::Partial(t) if t == "wait stop that")));
+    }
+
+    #[test]
+    fn words_after_a_stale_release_make_the_next_turn() {
+        let mut ep = Endpointer::default();
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        ep.update(&[line("check the training run", false)], t0, false, "");
+        let ev = ep.tick(ms(2600));
+        assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Check the training run"));
+        // the same line is still open and keeps growing
+        let ev = ep.update(&[line("check the training run and the eval logs", false)], ms(3000), false, "");
+        assert!(ev.iter().any(|e| matches!(e, Heard::Partial(t) if t == "and the eval logs")));
+        ep.update(&[line("check the training run and the eval logs", true)], ms(3200), false, "");
+        let ev = ep.tick(ms(4300));
+        assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "And the eval logs"));
+        // the line is done with; the next one starts clean
+        ep.update(&[line("check the training run and the eval logs", true), line("open the plots", true)], ms(5000), false, "");
+        let ev = ep.tick(ms(6000));
+        assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Open the plots"));
+    }
+
+    #[test]
+    fn echo_tail_outlives_playback() {
+        let e = Echo::default();
+        e.start("first line");
+        assert_eq!(e.current(), "first line");
+        e.end();
+        assert_eq!(e.current(), "first line", "kept while the tail plays out");
+        e.start("second line");
+        assert_eq!(e.current(), "first line second line");
+        e.0.lock().unwrap().until = Some(Instant::now());
+        assert_eq!(e.current(), "");
+    }
+
+    #[test]
+    fn closing_gate_flushes_the_rest() {
+        let mut feed = Feed::new(4000, 800);
+        let frame = vec![0.1f32; 512];
+        assert!(feed.push(&frame, Some(&[0.1])).is_none(), "closed gate keeps audio as preroll");
+        assert!(feed.push(&frame, Some(&[0.9])).is_none(), "open, but under a chunk");
+        assert!(feed.push(&frame, Some(&[0.8])).is_none());
+        let rest = feed.push(&frame, Some(&[0.1; 64])).expect("closing hands over what is left");
+        // the preroll frame plus the two frames while open
+        assert_eq!(rest.len(), 512 * 3);
+        assert!(feed.push(&frame, Some(&[0.1])).is_none(), "nothing more while closed");
+        // without a voice detector everything passes in chunks
+        let mut all = Feed::new(1000, 800);
+        assert!(all.push(&frame, None).is_none());
+        assert_eq!(all.push(&frame, None).map(|a| a.len()), Some(1024));
     }
 }
 

@@ -19,7 +19,9 @@ numbers. Never read code aloud.
 user corrects themselves, the last version wins. Use the repo context to fix misheard names.
 - A [voice] message that arrives while you work is steering: take it into account right away.
 - If the user says stop, stop the current action and say what state things are in.
-- say returns anything the user said meanwhile; treat it like a new [voice] message.";
+- say returns anything the user said meanwhile; treat it like a new [voice] message.
+- The plugin prints the spoken exchange in the session; do not restate it in text.";
+
 
 /// Reminder added when voice mode is switched on for a running session.
 pub const ACTIVATED: &str = "Voice mode is on. Talk to the user through the say tool as described \

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 /// `$PARLEY_MODELS`, else `$XDG_DATA_HOME/parley/models`, else `~/.local/share/parley/models`.
@@ -78,6 +78,71 @@ struct File {
     name: String,
     url: String,
     size: Option<u64>,
+    /// Base64 of the big-endian CRC32C when `checksum_type` is "crc32c"; empty when unknown.
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(default)]
+    checksum_type: Option<String>,
+}
+
+impl File {
+    fn new(name: &str, url: &str, size: u64) -> File {
+        File { name: name.into(), url: url.into(), size: Some(size), checksum: None, checksum_type: None }
+    }
+
+    /// The expected CRC32C, when the manifest gives one.
+    fn crc32c(&self) -> Result<Option<u32>> {
+        let (Some(sum), Some("crc32c")) = (self.checksum.as_deref(), self.checksum_type.as_deref()) else {
+            return Ok(None);
+        };
+        if sum.is_empty() {
+            return Ok(None);
+        }
+        let bytes = base64(sum).with_context(|| format!("{}: bad checksum {sum:?}", self.name))?;
+        let b: [u8; 4] = bytes.try_into().map_err(|_| anyhow!("{}: checksum {sum:?} is not 4 bytes", self.name))?;
+        Ok(Some(u32::from_be_bytes(b)))
+    }
+}
+
+/// Standard base64 with padding, as the manifests carry it.
+fn base64(s: &str) -> Result<Vec<u8>> {
+    let val = |c: u8| -> Result<u32> {
+        Ok(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => bail!("not base64: {:?}", c as char),
+        } as u32)
+    };
+    let s = s.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    for c in s.chunks(4) {
+        if c.len() == 1 {
+            bail!("truncated base64");
+        }
+        let mut n = 0u32;
+        for (i, &b) in c.iter().enumerate() {
+            n |= val(b)? << (18 - 6 * i);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[1..c.len()]);
+    }
+    Ok(out)
+}
+
+fn file_crc32c(path: &Path) -> Result<u32> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut crc = 0;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            return Ok(crc);
+        }
+        crc = crc32c::crc32c_append(crc, &buf[..n]);
+    }
 }
 
 pub fn fetch(voice: &str) -> Result<()> {
@@ -88,12 +153,12 @@ pub fn fetch(voice: &str) -> Result<()> {
     download(&serde_json::from_str(&tts)?, &tts_dir())?;
     let turn = Manifest {
         groups: vec![Group {
-            files: vec![File { name: TURN_FILE.into(), url: TURN_URL.into(), size: Some(TURN_SIZE) }],
+            files: vec![File::new(TURN_FILE, TURN_URL, TURN_SIZE)],
         }],
     };
     download(&turn, &root().join("turn"))?;
     let vad = Manifest {
-        groups: vec![Group { files: vec![File { name: VAD_FILE.into(), url: VAD_URL.into(), size: Some(VAD_SIZE) }] }],
+        groups: vec![Group { files: vec![File::new(VAD_FILE, VAD_URL, VAD_SIZE)] }],
     };
     download(&vad, &root().join("vad"))?;
     Ok(())
@@ -102,11 +167,14 @@ pub fn fetch(voice: &str) -> Result<()> {
 fn download(m: &Manifest, dir: &Path) -> Result<()> {
     for f in m.groups.iter().flat_map(|g| &g.files) {
         let dest = dir.join(&f.name);
-        if let (Ok(meta), Some(size)) = (std::fs::metadata(&dest), f.size) {
-            if meta.len() == size {
-                continue;
-            }
-        } else if f.size.is_none() && dest.exists() {
+        let crc = f.crc32c()?;
+        let have = match (std::fs::metadata(&dest), f.size) {
+            (Ok(meta), Some(size)) => meta.len() == size,
+            (Ok(_), None) => true,
+            (Err(_), _) => false,
+        };
+        // a file of the right size can still be damaged; the checksum decides when there is one
+        if have && crc.is_none_or(|want| file_crc32c(&dest).is_ok_and(|got| got == want)) {
             continue;
         }
         if let Some(parent) = dest.parent() {
@@ -132,7 +200,35 @@ fn download(m: &Manifest, dir: &Path) -> Result<()> {
                 bail!("{}: expected {size} bytes, got {got}", f.name);
             }
         }
+        if let Some(want) = crc {
+            let got = file_crc32c(&part)?;
+            if got != want {
+                let _ = std::fs::remove_file(&part);
+                bail!("{}: crc32c {got:08x}, expected {want:08x}", f.name);
+            }
+        }
         std::fs::rename(&part, &dest)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_checksum_is_big_endian_crc32c() {
+        let f = File {
+            name: "streaming_config.json".into(),
+            url: String::new(),
+            size: Some(512),
+            checksum: Some("dPbFiw==".into()),
+            checksum_type: Some("crc32c".into()),
+        };
+        assert_eq!(f.crc32c().unwrap(), Some(0x74f6_c58b));
+        let none = File { checksum: Some(String::new()), checksum_type: Some(String::new()), ..f };
+        assert_eq!(none.crc32c().unwrap(), None);
+        assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(crc32c::crc32c(b"123456789"), 0xe306_9283);
+    }
 }

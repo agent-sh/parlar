@@ -35,6 +35,16 @@ function loadPosition() {
     return null;
 }
 
+// a saved spot can be off screen after a monitor was unplugged or rearranged
+function clampToMonitors(x, y) {
+    const monitors = Main.layoutManager.monitors;
+    const cx = x + SIZE / 2, cy = y + SIZE / 2;
+    const mon = monitors.find(m => cx >= m.x && cx < m.x + m.width && cy >= m.y && cy < m.y + m.height) ??
+        Main.layoutManager.primaryMonitor;
+    const clamp = (v, lo, len) => Math.max(lo, Math.min(v, lo + Math.max(0, len - SIZE)));
+    return [clamp(x, mon.x, mon.width), clamp(y, mon.y, mon.height)];
+}
+
 function savePosition(x, y) {
     try {
         GLib.mkdir_with_parents(GLib.path_get_dirname(configPath()), 0o700);
@@ -55,6 +65,8 @@ class Indicator {
         this._agent = 0;
         this._swarm = new Swarm();
         this._tickId = 0;
+        this._graceId = 0;
+        this._destroyed = false;
         this._last = now();
 
         this.actor = new St.Widget({
@@ -72,6 +84,10 @@ class Indicator {
             x: SIZE - 26, y: SIZE - 26, opacity: 0, accessible_name: 'Mute microphone',
         });
         this._muteBtn.connect('clicked', () => this._setMuted(!this._muted));
+        // after the button's own handling, so its press and release never reach the indicator
+        // and start a drag or a toggle
+        for (const sig of ['button-press-event', 'button-release-event'])
+            this._muteBtn.connect_after(sig, () => Clutter.EVENT_STOP);
         this.actor.add_child(this._muteBtn);
         this.actor.connect('notify::hover', () => this._showMute());
 
@@ -89,8 +105,9 @@ class Indicator {
         Main.layoutManager.addTopChrome(this.actor, {trackFullscreen: true});
         const pos = loadPosition();
         const mon = Main.layoutManager.primaryMonitor;
-        const x = pos?.x ?? mon.x + mon.width - SIZE - 40;
-        const y = pos?.y ?? mon.y + 60;
+        const [x, y] = Number.isFinite(pos?.x) && Number.isFinite(pos?.y)
+            ? clampToMonitors(pos.x, pos.y)
+            : [mon.x + mon.width - SIZE - 40, mon.y + 60];
         this.actor.set_position(x, y);
 
         this._link = new Link(ev => this._event(ev), on => this._onLink(on));
@@ -99,11 +116,14 @@ class Indicator {
     }
 
     destroy() {
+        this._destroyed = true;
         this._link.stop();
         if (this._tickId)
             GLib.source_remove(this._tickId);
         this._tickId = 0;
+        this._clearGrace();
         this._grab?.dismiss();
+        this._grab = null;
         this._menu.destroy();
         Main.layoutManager.removeChrome(this.actor);
         this.actor.destroy();
@@ -113,11 +133,24 @@ class Indicator {
 
     _onLink(connected) {
         this._connected = connected;
+        this._clearGrace();
         if (!connected) {
             this._lostAt = now();
             this._user = this._agent = 0;
+            // the tick stops once the swarm settles; wake it when connecting turns into stopped
+            this._graceId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, CONNECTING_GRACE_S, () => {
+                this._graceId = 0;
+                this._wake();
+                return GLib.SOURCE_REMOVE;
+            });
         }
         this._wake();
+    }
+
+    _clearGrace() {
+        if (this._graceId)
+            GLib.source_remove(this._graceId);
+        this._graceId = 0;
     }
 
     _event(ev) {
@@ -168,8 +201,8 @@ class Indicator {
         this._user *= 0.85;
         this._agent *= 0.85;
         this._area.queue_repaint();
-        // keep ticking while the daemon is lost so connecting turns into stopped on time
-        if (!this._swarm.busy && this._connected) {
+        // settled: an event or the connecting grace timeout wakes the tick again
+        if (!this._swarm.busy) {
             this._tickId = 0;
             return GLib.SOURCE_REMOVE;
         }
@@ -201,6 +234,8 @@ class Indicator {
         const [x, y] = e.get_coords();
         const [ax, ay] = this.actor.get_position();
         this._drag = {x, y, ax, ay, moved: false};
+        // a press without its release (the pointer left mid-drag) must not leave a grab behind
+        this._grab?.dismiss();
         this._grab = global.stage.grab(this.actor);
         return Clutter.EVENT_STOP;
     }
@@ -290,6 +325,9 @@ class Indicator {
             return;
         }
         await this._fillMenu();
+        // the extension may have been disabled while the daemon answered
+        if (this._destroyed)
+            return;
         this._menu.open();
     }
 
@@ -304,6 +342,8 @@ class Indicator {
         try {
             [devs, state] = await Promise.all([request({op: 'devices'}), request({op: 'state'})]);
         } catch (_) {}
+        if (this._destroyed)
+            return;
         const sessions = (state.sessions ?? []).filter(x => x.session);
         if (sessions.length) {
             this._menu.addMenuItem(new PopupMenu.PopupMenuItem('Talk to', {reactive: false, style_class: 'parley-menu-title'}));

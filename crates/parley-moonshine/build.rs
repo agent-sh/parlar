@@ -30,7 +30,11 @@ fn main() {
     for name in LIBS {
         let src = lib.join(name);
         assert!(src.exists(), "{} is missing; set PARLEY_MOONSHINE_DIR to an unpacked moonshine-voice release", src.display());
-        std::fs::copy(&src, profile_dir.join(name)).expect("copy library next to binaries");
+        // copy under a temporary name, then rename over the old one: a running binary keeps the
+        // library it mapped instead of seeing it rewritten in place
+        let tmp = profile_dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        std::fs::copy(&src, &tmp).expect("copy library next to binaries");
+        std::fs::rename(&tmp, profile_dir.join(name)).expect("move library into place");
     }
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=moonshine");

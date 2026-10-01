@@ -111,30 +111,48 @@ export class Link {
     }
 }
 
-/** Send one request and resolve with the reply. */
+const REQUEST_TIMEOUT_MS = 2000;
+
+/** Send one request and resolve with the reply, or reject after REQUEST_TIMEOUT_MS. */
 export function request(req) {
     return new Promise((resolve, reject) => {
+        const cancel = new Gio.Cancellable();
+        let conn = null;
+        let timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, REQUEST_TIMEOUT_MS, () => {
+            timeoutId = 0;
+            cancel.cancel();
+            return GLib.SOURCE_REMOVE;
+        });
+        const finish = () => {
+            if (timeoutId)
+                GLib.source_remove(timeoutId);
+            timeoutId = 0;
+            try {
+                conn?.close(null);
+            } catch (_) {}
+            conn = null;
+        };
         const client = new Gio.SocketClient();
-        client.connect_async(address(), null, (c, res) => {
-            let conn;
+        client.connect_async(address(), cancel, (c, res) => {
             try {
                 conn = c.connect_finish(res);
-                conn.get_output_stream().write_all(enc.encode(`${JSON.stringify(req)}\n`), null);
+                conn.get_output_stream().write_all(enc.encode(`${JSON.stringify(req)}\n`), cancel);
             } catch (e) {
+                finish();
                 reject(e);
                 return;
             }
             const din = new Gio.DataInputStream({base_stream: conn.get_input_stream()});
-            din.read_line_async(GLib.PRIORITY_DEFAULT, null, (s, r) => {
+            din.read_line_async(GLib.PRIORITY_DEFAULT, cancel, (s, r) => {
                 try {
                     const [line] = s.read_line_finish_utf8(r);
+                    if (line === null)
+                        throw new Error('parleyd closed the connection');
                     resolve(JSON.parse(line));
                 } catch (e) {
                     reject(e);
                 } finally {
-                    try {
-                        conn.close(null);
-                    } catch (_) {}
+                    finish();
                 }
             });
         });

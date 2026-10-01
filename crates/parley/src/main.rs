@@ -88,6 +88,13 @@ enum Ctl {
     VoiceOff,
     /// Give voice focus to a session id.
     Focus { session: String },
+    /// Start talking to a session: attach it if needed, unmute, start, give it focus.
+    Talk {
+        #[arg(long)]
+        session: String,
+        #[arg(long, value_enum, default_value = "claude")]
+        harness: HarnessArg,
+    },
     /// List audio devices.
     Devices,
     /// Switch the mic to a device id from `devices`.
@@ -189,6 +196,18 @@ fn ctl(cmd: Ctl) -> Result<()> {
             output: None,
         },
         Ctl::Devices => Request::Devices,
+        Ctl::Talk { session, harness } => {
+            let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+            let r = c.call(
+                &Request::Talk { origin: client::origin(Some(session)), harness: harness.into(), cwd },
+                Some(Duration::from_secs(5)),
+            )?;
+            if let Response::Error { message } = r {
+                anyhow::bail!("{message}");
+            }
+            println!("{}", status_line());
+            return Ok(());
+        }
         Ctl::Input { id } => dev(Some(id), None),
         Ctl::Output { id } => dev(None, Some(id)),
         Ctl::Watch => {

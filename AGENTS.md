@@ -12,8 +12,10 @@ Indicator mockups: `design/indicator-lab.html` (the swarm is the chosen visual).
 - `crates/parley-moonshine`: bindings to libmoonshine. Its build script fetches the pinned
   release (sha256 checked) unless `PARLEY_MOONSHINE_DIR` is set, and copies the libraries next
   to the binaries.
-- `plugin/claude`, `plugin/codex`: harness plugins. `bin/` is a dev symlink, not committed; the
-  install script points it at the installed binary.
+- `plugin/claude`, `plugin/codex`: harness plugins. `bin/parley` is a committed shell launcher
+  that runs the installed binary and keeps hooks silent before install; the install script
+  replaces it with the real binary in the local marketplace copy. Never symlink it to
+  `target/release/parley`: writing through the link overwrites the build (it is a hard link).
 - `shell/gnome`: the GNOME Shell indicator (swarm). `scripts/install.sh`: per-user install.
 
 ## Rules
@@ -30,7 +32,8 @@ Indicator mockups: `design/indicator-lab.html` (the swarm is the chosen visual).
 ## Checks
 - `cargo build --release && cargo test --release` (run under `nice -n 19`).
 - End to end: start `parleyd --silent` (add `--input-wav` for speech), start
-  `claude --plugin-dir plugin/claude` in a scratch dir, drive utterances with
+  `claude --plugin-dir plugin/claude` in a scratch dir (with parley installed, or `PARLEY_BIN`
+  pointing at `target/release/parley`), drive utterances with
   `parley ctl hear "..."`. Kill test processes by pid; never `pkill -f` a pattern that appears in
   the same shell command line.
 - Indicator: test in a nested shell, `dbus-run-session -- env GSETTINGS_BACKEND=memory

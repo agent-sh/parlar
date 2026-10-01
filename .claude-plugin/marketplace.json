@@ -1,0 +1,11 @@
+{
+  "name": "parley",
+  "owner": { "name": "Avi Fenesh" },
+  "plugins": [
+    {
+      "name": "parley",
+      "source": "./plugin/claude",
+      "description": "Voice conversation mode: talk to this session and hear it talk back"
+    }
+  ]
+}

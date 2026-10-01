@@ -11,6 +11,9 @@ pub const RATE: u32 = 16000;
 const FRAME: usize = (RATE / 100) as usize;
 /// Far-end audio older than this is dropped; the canceller's delay estimator covers far less.
 const FAR_CAP: usize = RATE as usize;
+/// Far-end audio kept beyond what the pending mic audio needs (40 ms), to absorb the speaker's
+/// callback size. More would leave the far end behind the echo in the mic.
+const FAR_SLACK: usize = (RATE / 25) as usize;
 
 /// What the speaker actually played, at 16 kHz, waiting to be matched against the mic.
 #[derive(Clone, Default)]
@@ -24,11 +27,20 @@ impl Far {
         q.drain(..over);
     }
 
-    fn take(&self, out: &mut [f32]) {
+    /// The oldest far-end audio for one mic frame, with `ahead` more mic samples still waiting.
+    /// A backlog beyond that plus the slack (the speaker kept playing while no mic audio came
+    /// in) is dropped from the old end so the far end stays level with the mic.
+    fn take(&self, out: &mut [f32], ahead: usize) {
         let mut q = self.0.lock().unwrap();
+        let over = q.len().saturating_sub(out.len() + ahead + FAR_SLACK);
+        q.drain(..over);
         for o in out.iter_mut() {
             *o = q.pop_front().unwrap_or(0.0);
         }
+    }
+
+    pub fn clear(&self) {
+        self.0.lock().unwrap().clear();
     }
 }
 
@@ -75,13 +87,21 @@ impl Aec {
         Aec { apm, far, pending: Vec::new(), far_frame: vec![0.0; FRAME], scratch: vec![0.0; FRAME], clean: vec![0.0; FRAME] }
     }
 
+    /// Capture resumed after a gap: what the speaker played meanwhile no longer lines up with
+    /// the mic, and neither does a leftover partial frame.
+    pub fn resume(&mut self) {
+        self.far.clear();
+        self.pending.clear();
+    }
+
     /// Mic audio in, echo-cancelled audio out, in 10 ms steps (a remainder waits for the next call).
     pub fn process(&mut self, mic: &[f32]) -> Vec<f32> {
         self.pending.extend_from_slice(mic);
         let mut out = Vec::with_capacity(self.pending.len());
         let mut used = 0;
         while self.pending.len() - used >= FRAME {
-            self.far.take(&mut self.far_frame);
+            let ahead = self.pending.len() - used - FRAME;
+            self.far.take(&mut self.far_frame, ahead);
             let _ = self.apm.process_render_f32(&[&self.far_frame], &mut [&mut self.scratch]);
             let frame = &self.pending[used..used + FRAME];
             let _ = self.apm.process_capture_f32(&[frame], &mut [&mut self.clean]);
@@ -130,5 +150,23 @@ mod tests {
         let (m, o) = (rms(&mic[n - tail..]), rms(&out[out.len() - tail..]));
         eprintln!("echo reduction: {:.1} dB", 20.0 * (m / o.max(1e-9)).log10());
         assert!(o < m * 0.25, "echo should drop by 12 dB or more: mic {m:.4}, out {o:.4}");
+    }
+
+    #[test]
+    fn far_backlog_stays_level_with_the_mic() {
+        let f = Far::default();
+        // the speaker played a second while the mic gate was closed
+        f.push(&vec![0.5; RATE as usize]);
+        let mut out = vec![0.0; FRAME];
+        f.take(&mut out, FRAME * 2);
+        assert_eq!(f.0.lock().unwrap().len(), FRAME * 2 + FAR_SLACK);
+        // a short backlog is left alone
+        let g = Far::default();
+        g.push(&vec![0.5; FRAME * 3]);
+        g.take(&mut out, 0);
+        assert_eq!(g.0.lock().unwrap().len(), FRAME * 2);
+        g.clear();
+        g.take(&mut out, 0);
+        assert!(out.iter().all(|&v| v == 0.0));
     }
 }

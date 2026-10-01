@@ -167,6 +167,9 @@ async fn serve(cli: Cli) -> Result<()> {
         voice::Engine::Speaker(k)
     };
     let mut d = daemon::Daemon::new(Arc::new(voice::Queue::new(engine)));
+    if std::env::var_os("PARLEY_SOCKET").is_none() && cli.input_wav.is_empty() {
+        d.state.lock().await.restore_saved();
+    }
     let user_level = Arc::new(AtomicU32::new(0));
     let gate = d.state.lock().await.mic_gate();
 
@@ -191,7 +194,7 @@ async fn serve(cli: Cli) -> Result<()> {
     if let Some(frames) = frames {
         let (playing, echo) = match &kokoro {
             Some((k, _)) => (k.playing.clone(), k.echo.clone()),
-            None => (Arc::default(), Arc::default()),
+            None => (Arc::default(), listen::Echo::default()),
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let vocab = Arc::new(std::sync::Mutex::new(vocab::Vocab::default()));

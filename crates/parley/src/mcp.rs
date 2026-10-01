@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::client::{Client, origin};
+use crate::client::{Client, mcp_origin};
 use crate::format;
 use crate::proto::{Harness, Request, Response, SayKind};
 
@@ -62,7 +62,7 @@ pub fn serve(harness: Harness) -> Result<()> {
 fn attach(harness: Harness) -> Option<Client> {
     let mut c = Client::connect()?;
     let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-    let req = Request::Attach { origin: origin(None), harness, cwd, mcp: true };
+    let req = Request::Attach { origin: mcp_origin(None), harness, cwd, mcp: true };
     c.call(&req, Some(Duration::from_secs(2))).ok()?;
     Some(c)
 }
@@ -109,7 +109,7 @@ fn call(daemon: &mut Option<Client>, harness: Harness, msg: &Value) -> Value {
         .iter()
         .find_map(|p| msg.pointer(p).and_then(Value::as_str))
         .map(str::to_string);
-    let req = Request::Say { origin: origin(session), text: text.to_string(), kind };
+    let req = Request::Say { origin: mcp_origin(session), text: text.to_string(), kind };
     // the daemon may have started or restarted since the last call
     for attempt in 0..2 {
         if daemon.is_none() || attempt == 1 {

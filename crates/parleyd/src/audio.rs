@@ -2,9 +2,10 @@
 //! switching devices (different rates, channel counts) never reaches the speech pipeline.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -13,21 +14,52 @@ use parley::proto::Device;
 
 pub const MIC_RATE: u32 = 16000;
 
+/// Mic chunks that may wait for the listener (a few seconds of audio); beyond that new audio is
+/// dropped so a stalled recognizer cannot grow memory without limit.
+const MIC_QUEUE: usize = 256;
+
 /// Raised by a stream's error callback when its device changed or went away (a Bluetooth
 /// profile switch replaces the device); a supervisor thread then reopens the stream.
 static MIC_STALE: AtomicBool = AtomicBool::new(false);
 static SPEAKER_STALE: AtomicBool = AtomicBool::new(false);
 
-/// Reopen a stream after its device changed, once the devices have settled.
-fn supervise(name: &'static str, stale: &'static AtomicBool, reopen: impl Fn() -> bool + Send + 'static) {
-    let _ = std::thread::Builder::new().name(format!("parley-{name}-watch")).spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        if stale.swap(false, Ordering::SeqCst) {
-            std::thread::sleep(std::time::Duration::from_millis(700));
+/// Errors that mean the stream is gone or must be rebuilt. Glitches such as an xrun do not.
+fn needs_reopen(e: &cpal::Error) -> bool {
+    use cpal::ErrorKind as K;
+    matches!(e.kind(), K::DeviceNotAvailable | K::StreamInvalidated | K::DeviceChanged)
+}
+
+/// Reopen a stream after its device changed, once the devices have settled, and keep retrying
+/// (1 s, 2 s, 4 s, up to 10 s apart) while no device opens. `reopen` returns None once its owner
+/// is gone.
+fn supervise(name: &'static str, stale: &'static AtomicBool, reopen: impl Fn() -> Option<Result<()>> + Send + 'static) {
+    let _ = std::thread::Builder::new().name(format!("parley-{name}-watch")).spawn(move || {
+        let mut retry: Option<Duration> = None;
+        loop {
+            match retry {
+                Some(wait) => std::thread::sleep(wait),
+                None => {
+                    std::thread::sleep(Duration::from_millis(500));
+                    if !stale.swap(false, Ordering::SeqCst) {
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(700));
+                    eprintln!("{name}: device changed, reopening");
+                }
+            }
             stale.store(false, Ordering::SeqCst);
-            eprintln!("{name}: device changed, reopening");
-            if !reopen() {
-                return;
+            match reopen() {
+                None => return,
+                Some(Ok(())) => {
+                    if retry.take().is_some() {
+                        eprintln!("{name}: reopened");
+                    }
+                }
+                Some(Err(e)) => {
+                    let wait = retry.map_or(Duration::from_secs(1), |w| (w * 2).min(Duration::from_secs(10)));
+                    eprintln!("{name}: reopen failed: {e:#}; retrying in {} s", wait.as_secs());
+                    retry = Some(wait);
+                }
             }
         }
     });
@@ -145,26 +177,32 @@ pub fn rms(pcm: &[f32]) -> f32 {
 }
 
 /// A device stream on its own thread (cpal streams are not Send everywhere). Dropping the
-/// handle stops the stream.
+/// handle stops the stream and waits until it is closed, so an old and a new stream never run
+/// side by side.
 struct Running {
     id: String,
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            t.thread().unpark();
+            let _ = t.join();
+        }
     }
 }
 
-fn run_stream<F>(name: &str, open: F) -> Result<Arc<AtomicBool>>
+fn run_stream<F>(name: &str, id: String, open: F) -> Result<Running>
 where
     F: FnOnce() -> Result<cpal::Stream> + Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
     let s = stop.clone();
-    std::thread::Builder::new().name(name.into()).spawn(move || {
+    let thread = std::thread::Builder::new().name(name.into()).spawn(move || {
         let opened = open().and_then(|st| {
             st.play()?;
             Ok(st)
@@ -172,8 +210,9 @@ where
         match opened {
             Ok(stream) => {
                 let _ = ready_tx.send(Ok(()));
+                // Running::drop unparks this thread; park may also wake spuriously
                 while !s.load(Ordering::SeqCst) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::park();
                 }
                 drop(stream);
             }
@@ -182,8 +221,13 @@ where
             }
         }
     })?;
-    ready_rx.recv().context("audio thread died")??;
-    Ok(stop)
+    match ready_rx.recv().context("audio thread died").and_then(|r| r) {
+        Ok(()) => Ok(Running { id, stop, thread: Some(thread) }),
+        Err(e) => {
+            let _ = thread.join();
+            Err(e)
+        }
+    }
 }
 
 /// Mono 16 kHz frames from whatever mic is current.
@@ -193,7 +237,7 @@ pub struct Frames {
 }
 
 pub struct Mic {
-    tx: mpsc::Sender<Vec<f32>>,
+    tx: mpsc::SyncSender<Vec<f32>>,
     gate: Arc<AtomicBool>,
     running: Mutex<Option<Running>>,
     want: Mutex<Option<String>>,
@@ -201,16 +245,13 @@ pub struct Mic {
 
 impl Mic {
     pub fn new(gate: Arc<AtomicBool>) -> (Arc<Mic>, Frames) {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(MIC_QUEUE);
         let m = Arc::new(Mic { tx, gate, running: Mutex::new(None), want: Mutex::new(None) });
         let weak = Arc::downgrade(&m);
         supervise("mic", &MIC_STALE, move || {
-            let Some(m) = weak.upgrade() else { return false };
+            let m = weak.upgrade()?;
             let want = m.want.lock().unwrap().clone();
-            if let Err(e) = m.open(want.as_deref()).or_else(|_| m.open(None)) {
-                eprintln!("mic: reopen failed: {e:#}");
-            }
-            true
+            Some(m.open(want.as_deref()).or_else(|_| m.open(None)))
         });
         (m, Frames { rx, rate: MIC_RATE })
     }
@@ -233,7 +274,7 @@ impl Mic {
         }
         // stop the old stream first so two never feed the recognizer at once
         self.running.lock().unwrap().take();
-        let stop = run_stream("parley-mic", move || {
+        let running = run_stream("parley-mic", id, move || {
             let cfg: cpal::StreamConfig = cfg.into();
             match fmt {
                 SampleFormat::F32 => input::<f32>(&dev, cfg, ch, rate, tx, gate),
@@ -241,7 +282,7 @@ impl Mic {
                 f => Err(anyhow!("unsupported mic sample format {f:?}")),
             }
         })?;
-        *self.running.lock().unwrap() = Some(Running { id, stop });
+        *self.running.lock().unwrap() = Some(running);
         Ok(())
     }
 }
@@ -265,7 +306,7 @@ fn input<T: ToF32>(
     cfg: cpal::StreamConfig,
     ch: usize,
     rate: u32,
-    tx: mpsc::Sender<Vec<f32>>,
+    tx: mpsc::SyncSender<Vec<f32>>,
     gate: Arc<AtomicBool>,
 ) -> Result<cpal::Stream> {
     let mut rs = Resampler::new(rate, MIC_RATE);
@@ -280,11 +321,14 @@ fn input<T: ToF32>(
             mono.extend(data.chunks(ch).map(|f| f.iter().map(|s| s.f()).sum::<f32>() / ch as f32));
             let mut out = Vec::with_capacity(mono.len() * MIC_RATE as usize / rate as usize + 1);
             rs.process(&mono, &mut out);
-            let _ = tx.send(out);
+            // a full queue means the listener is stuck; drop audio rather than block the device
+            let _ = tx.try_send(out);
         },
         |e| {
             eprintln!("mic stream: {e}");
-            MIC_STALE.store(true, Ordering::SeqCst);
+            if needs_reopen(&e) {
+                MIC_STALE.store(true, Ordering::SeqCst);
+            }
         },
         None,
     )?)
@@ -296,6 +340,10 @@ pub struct Player {
     level: AtomicU32,
     running: Mutex<Option<Running>>,
     want: Mutex<Option<String>>,
+    /// When the output callback last ran, in ms since `born`, to notice a speaker that stopped
+    /// pulling audio.
+    pulled: AtomicU64,
+    born: Instant,
     /// What actually reached the speaker, at 16 kHz, for echo cancellation.
     pub far: crate::aec::Far,
 }
@@ -307,16 +355,15 @@ impl Player {
             level: AtomicU32::new(0),
             running: Mutex::new(None),
             want: Mutex::new(None),
+            pulled: AtomicU64::new(0),
+            born: Instant::now(),
             far: crate::aec::Far::default(),
         });
         let weak = Arc::downgrade(&p);
         supervise("speaker", &SPEAKER_STALE, move || {
-            let Some(p) = weak.upgrade() else { return false };
+            let p = weak.upgrade()?;
             let want = p.want.lock().unwrap().clone();
-            if let Err(e) = p.open(want.as_deref()).or_else(|_| p.open(None)) {
-                eprintln!("speaker: reopen failed: {e:#}");
-            }
-            true
+            Some(p.open(want.as_deref()).or_else(|_| p.open(None)))
         });
         p
     }
@@ -333,6 +380,14 @@ impl Player {
     }
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+    fn mark_pulled(&self) {
+        self.pulled.store(self.born.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+    /// True when the speaker has not asked for audio for `limit` (suspended or gone).
+    pub fn stalled(&self, limit: Duration) -> bool {
+        let last = Duration::from_millis(self.pulled.load(Ordering::Relaxed));
+        self.born.elapsed().saturating_sub(last) > limit
     }
     pub fn current(&self) -> Option<String> {
         self.running.lock().unwrap().as_ref().map(|r| r.id.clone())
@@ -351,7 +406,7 @@ impl Player {
             *self.want.lock().unwrap() = device.map(str::to_string);
         }
         self.running.lock().unwrap().take();
-        let stop = run_stream("parley-speaker", move || {
+        let running = run_stream("parley-speaker", id, move || {
             let cfg: cpal::StreamConfig = cfg.into();
             match fmt {
                 SampleFormat::F32 => output::<f32>(&dev, cfg, ch, rate, p, |v| v),
@@ -359,7 +414,7 @@ impl Player {
                 f => Err(anyhow!("unsupported speaker sample format {f:?}")),
             }
         })?;
-        *self.running.lock().unwrap() = Some(Running { id, stop });
+        *self.running.lock().unwrap() = Some(running);
         Ok(())
     }
 }
@@ -382,6 +437,7 @@ fn output<T: SizedSample + Send + 'static>(
     Ok(dev.build_output_stream(
         cfg,
         move |out: &mut [T], _: &_| {
+            p.mark_pulled();
             let frames = out.len() / ch;
             {
                 // pull just enough 24 kHz audio to cover this callback at the device rate
@@ -413,7 +469,9 @@ fn output<T: SizedSample + Send + 'static>(
         },
         |e| {
             eprintln!("speaker stream: {e}");
-            SPEAKER_STALE.store(true, Ordering::SeqCst);
+            if needs_reopen(&e) {
+                SPEAKER_STALE.store(true, Ordering::SeqCst);
+            }
         },
         None,
     )?)
@@ -494,7 +552,8 @@ pub fn from_wavs(paths: Vec<std::path::PathBuf>, delay: f32, gap: f32, gate: Arc
             Ok(resample(&pcm, r, MIC_RATE))
         })
         .collect::<Result<_>>()?;
-    let (tx, rx) = mpsc::channel();
+    // a blocking send here only paces the test source
+    let (tx, rx) = mpsc::sync_channel(MIC_QUEUE);
     std::thread::Builder::new().name("parley-wav".into()).spawn(move || {
         let frame = MIC_RATE as usize / 50;
         let silence = vec![0f32; frame];

@@ -2,14 +2,14 @@
 //! When parleyd is not running every handler exits 0 with no output, so the plugin is inert.
 
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::client::{Client, origin};
 use crate::format;
-use crate::proto::{Harness, Request, Response, TurnEvent, Utterance};
+use crate::proto::{Harness, Origin, Request, Response, TurnEvent, Utterance};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Event {
@@ -29,15 +29,26 @@ pub enum Event {
     StopWait,
 }
 
+/// A hook runs on every tool call, so a slow or stuck daemon must cost little.
+const QUICK: Duration = Duration::from_millis(400);
+
 /// Returns the process exit code.
 pub fn run(event: Event, harness: Harness) -> Result<i32> {
     let mut raw = String::new();
     std::io::stdin().read_to_string(&mut raw)?;
     let input: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-    let Some(mut c) = Client::connect() else { return Ok(0) };
     let session = input.get("session_id").and_then(Value::as_str).map(str::to_string);
     let o = origin(session);
-    let quick = Some(Duration::from_secs(2));
+    if event == Event::Wait {
+        return wait(&o);
+    }
+    let Some(mut c) = Client::connect() else { return Ok(0) };
+    let quick = Some(QUICK);
+    // a subagent's tool calls carry the parent's session id; speech is for the main thread
+    let subagent = input.get("agent_id").and_then(Value::as_str).is_some_and(|a| !a.is_empty());
+    // Claude Code shows a hook's systemMessage to the person without giving it to the model,
+    // which is how the conversation gets printed at no token cost
+    let shows = harness == Harness::Claude;
 
     match event {
         Event::SessionStart => {
@@ -53,7 +64,9 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             }
         }
         Event::SessionEnd => {
-            c.call(&Request::Detach { origin: o }, quick)?;
+            // /clear ends the session and starts a new id in the same harness: keep its focus
+            let rebind = input.get("reason").and_then(Value::as_str) == Some("clear");
+            c.call(&Request::Detach { origin: o, rebind }, quick)?;
         }
         Event::Prompt => {
             // attach again: a session that started before parleyd gets its folder and harness
@@ -64,6 +77,9 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
         Event::PreTool => {
             let tool = tool_name(&input);
             c.call(&Request::Event { origin: o.clone(), event: TurnEvent::ToolStart, tool }, quick)?;
+            if subagent {
+                return Ok(0);
+            }
             let items = items(c.call(&Request::ClaimStop { origin: o }, quick)?);
             if !items.is_empty() {
                 let reason = format!(
@@ -83,51 +99,87 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             let failed = event == Event::PostToolFailure || tool_failed(&input);
             let ev = if failed { TurnEvent::ToolError } else { TurnEvent::ToolEnd };
             c.call(&Request::Event { origin: o.clone(), event: ev, tool: tool_name(&input) }, quick)?;
-            let items = items(c.call(&Request::Claim { origin: o }, quick)?);
+            if subagent {
+                return Ok(0);
+            }
+            let items = items(c.call(&Request::Claim { origin: o.clone(), at_stop: false }, quick)?);
+            let mut out = Map::new();
             if !items.is_empty() {
                 let name = if event == Event::PostTool { "PostToolUse" } else { "PostToolUseFailure" };
-                print_json(&json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": name,
-                        "additionalContext": format::utterances(&items),
-                    }
-                }));
+                out.insert(
+                    "hookSpecificOutput".into(),
+                    json!({ "hookEventName": name, "additionalContext": format::utterances(&items) }),
+                );
             }
+            if shows {
+                show(&mut c, &o, &mut out);
+            }
+            print_map(out);
         }
         Event::Stop => {
             c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
-            let items = items(c.call(&Request::Claim { origin: o }, quick)?);
+            let items = items(c.call(&Request::Claim { origin: o.clone(), at_stop: true }, quick)?);
+            let mut out = Map::new();
             if !items.is_empty() {
-                print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
+                out.insert("decision".into(), json!("block"));
+                out.insert("reason".into(), json!(format::utterances(&items)));
             }
-        }
-        Event::Wait => {
-            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms(), holds_turn: false }, None)?;
-            let items = items(r);
-            if !items.is_empty() {
-                eprintln!("{}", format::utterances(&items));
-                return Ok(2);
+            if shows {
+                show(&mut c, &o, &mut out);
             }
+            print_map(out);
         }
         Event::StopWait => {
             c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
-            // this waiter holds the turn open, so it only waits while the conversation is on and
-            // this session is the one being talked to
-            if !talking_to(&mut c, o.session.as_deref())? {
-                let items = items(c.call(&Request::Claim { origin: o }, quick)?);
-                if !items.is_empty() {
-                    print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
-                }
-                return Ok(0);
-            }
+            // this waiter holds the turn open; parleyd only lets it wait while the conversation
+            // is on and this session has focus, and releases it when either changes
             let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms(), holds_turn: true }, None)?;
             let items = items(r);
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
             }
         }
+        Event::Wait => unreachable!("handled above"),
     }
     Ok(0)
+}
+
+/// Background idle waiter. It is detached from the harness, so it rides out parleyd restarts:
+/// on a lost connection it reconnects until its deadline instead of leaving the session deaf.
+fn wait(o: &Origin) -> Result<i32> {
+    let deadline = Instant::now() + Duration::from_millis(wait_ms());
+    loop {
+        if Instant::now() >= deadline {
+            return Ok(0);
+        }
+        let Some(mut c) = Client::connect() else {
+            std::thread::sleep(Duration::from_secs(3));
+            continue;
+        };
+        let left = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
+        let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn: false };
+        match c.call(&req, None) {
+            Ok(Response::Utterances { items, superseded }) => {
+                if !items.is_empty() {
+                    eprintln!("{}", format::utterances(&items));
+                    return Ok(2);
+                }
+                // replaced by a newer waiter, released, or timed out: this one is done
+                let _ = superseded;
+                return Ok(0);
+            }
+            Ok(_) => return Ok(0),
+            Err(_) => std::thread::sleep(Duration::from_secs(2)),
+        }
+    }
+}
+
+/// Add the conversation lines not yet printed as the hook's system message.
+fn show(c: &mut Client, o: &Origin, out: &mut Map<String, Value>) {
+    if let Ok(Response::Transcript { lines }) = c.call(&Request::Transcript { origin: o.clone() }, Some(QUICK))
+        && !lines.is_empty() {
+            out.insert("systemMessage".into(), json!(lines.join("\n")));
+        }
 }
 
 fn items(r: Response) -> Vec<Utterance> {
@@ -139,14 +191,6 @@ fn items(r: Response) -> Vec<Utterance> {
 
 fn wait_ms() -> u64 {
     std::env::var("PARLEY_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(23 * 3600 * 1000)
-}
-
-fn talking_to(c: &mut Client, session: Option<&str>) -> Result<bool> {
-    let Some(session) = session else { return Ok(false) };
-    Ok(match c.call(&Request::State, Some(Duration::from_secs(2)))? {
-        Response::State(s) => s.active && s.sessions.iter().any(|x| x.focused && x.session.as_deref() == Some(session)),
-        _ => false,
-    })
 }
 
 fn last_message(input: &Value) -> Option<String> {
@@ -165,4 +209,10 @@ fn tool_failed(input: &Value) -> bool {
 
 fn print_json(v: &Value) {
     println!("{v}");
+}
+
+fn print_map(m: Map<String, Value>) {
+    if !m.is_empty() {
+        print_json(&Value::Object(m));
+    }
 }

@@ -44,13 +44,11 @@ impl Vocab {
                 if seen.insert(part.to_lowercase()) {
                     ranked.push((depth + 1, part.to_string()));
                 }
-                if is_file {
-                    if let Some((stem, _)) = part.rsplit_once('.') {
-                        if stem.len() > 2 && seen.insert(stem.to_lowercase()) {
+                if is_file
+                    && let Some((stem, _)) = part.rsplit_once('.')
+                        && stem.len() > 2 && seen.insert(stem.to_lowercase()) {
                             ranked.push((depth + 1, stem.to_string()));
                         }
-                    }
-                }
             }
         }
         // shallow names first: they are the ones people say
