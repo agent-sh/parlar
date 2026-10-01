@@ -38,7 +38,9 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
     std::io::stdin().read_to_string(&mut raw)?;
     let input: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let session = input.get("session_id").and_then(Value::as_str).map(str::to_string);
-    let o = origin(session);
+    let mut o = origin(session);
+    o.cwd = input.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_string);
+    o.harness = Some(harness);
     if event == Event::Wait {
         return wait(&o);
     }

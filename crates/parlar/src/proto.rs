@@ -66,6 +66,12 @@ pub struct Origin {
     /// The request comes from the session's MCP server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mcp: bool,
+    /// The session's folder and harness, from hooks. They let parlard rebuild a session it lost
+    /// in a restart from any hook, not only from the next typed prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<Harness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
