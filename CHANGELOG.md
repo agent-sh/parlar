@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.3] - 2026-10-01
 
 ### Added
 - `config.toml` picks the language, the recognizer (Phonon-2, Parakeet TDT 0.6B v3 for 25
