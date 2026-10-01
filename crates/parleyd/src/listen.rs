@@ -25,6 +25,8 @@ pub enum Heard {
 
 pub struct Config {
     pub every_ms: usize,
+    /// Voice detector that gates the recognizer; without it the recognizer sees everything.
+    pub vad: Option<crate::vad::Vad>,
     /// Echo canceller fed by the speaker; without it only the text echo guard applies.
     pub aec: Option<crate::aec::Aec>,
     /// End-of-turn audio model; without it the word rule alone decides.
@@ -73,6 +75,9 @@ fn run(
     let mut last_level = Instant::now();
     let mut peak = 0f32;
     let mut recent = Recent::new(frames.rate as usize * 8);
+    let mut gate = crate::vad::Gate::new();
+    // audio from just before the voice detector fired, so the first word is not clipped
+    let mut preroll = Recent::new(frames.rate as usize / 2);
     loop {
         match frames.rx.recv_timeout(Duration::from_millis(30)) {
             Ok(f) => {
@@ -81,8 +86,19 @@ fn run(
                     None => f,
                 };
                 peak = peak.max(audio::rms(&f));
-                buf.extend_from_slice(&f);
                 recent.push(&f);
+                let opened = match cfg.vad.as_mut() {
+                    Some(v) => gate.update(&v.push(&f)?),
+                    None => false,
+                };
+                if cfg.vad.is_none() || gate.is_open() {
+                    if opened {
+                        buf.extend(preroll.buf.drain(..));
+                    }
+                    buf.extend_from_slice(&f);
+                } else {
+                    preroll.push(&f);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),

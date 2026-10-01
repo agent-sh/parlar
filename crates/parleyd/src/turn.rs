@@ -108,6 +108,16 @@ fn mel_filters() -> Vec<Vec<f32>> {
         .collect()
 }
 
+/// Point `ort` at the ONNX Runtime that libmoonshine already loaded, once per process.
+pub fn init_ort(lib: &Path) -> Result<()> {
+    static DONE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if DONE.get().is_none() {
+        ort::init_from(lib.display().to_string()).commit().context("init onnx runtime")?;
+        let _ = DONE.set(());
+    }
+    Ok(())
+}
+
 pub struct SmartTurn {
     session: ort::session::Session,
     features: Features,
@@ -117,7 +127,7 @@ impl SmartTurn {
     /// `ort_lib` is the ONNX Runtime shared library already loaded by libmoonshine, so the process
     /// carries one runtime.
     pub fn load(model: &Path, ort_lib: &Path) -> Result<SmartTurn> {
-        ort::init_from(ort_lib.display().to_string()).commit().context("init onnx runtime")?;
+        init_ort(ort_lib)?;
         let session = ort::session::Session::builder()?
             .with_intra_threads(1)?
             .commit_from_file(model)

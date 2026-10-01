@@ -35,6 +35,14 @@ const TURN_FILE: &str = "smart-turn-v3.2-cpu.onnx";
 const TURN_URL: &str = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx";
 const TURN_SIZE: u64 = 8_679_182;
 
+const VAD_FILE: &str = "silero_vad.onnx";
+const VAD_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx";
+const VAD_SIZE: u64 = 2_327_524;
+
+pub fn vad_model() -> PathBuf {
+    root().join("vad").join(VAD_FILE)
+}
+
 pub fn turn_model() -> PathBuf {
     root().join("turn").join(TURN_FILE)
 }
@@ -84,6 +92,10 @@ pub fn fetch(voice: &str) -> Result<()> {
         }],
     };
     download(&turn, &root().join("turn"))?;
+    let vad = Manifest {
+        groups: vec![Group { files: vec![File { name: VAD_FILE.into(), url: VAD_URL.into(), size: Some(VAD_SIZE) }] }],
+    };
+    download(&vad, &root().join("vad"))?;
     Ok(())
 }
 

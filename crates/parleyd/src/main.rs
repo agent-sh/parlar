@@ -4,6 +4,7 @@ mod listen;
 mod models;
 mod speak;
 mod turn;
+mod vad;
 mod vocab;
 mod wav;
 
@@ -66,6 +67,8 @@ enum Cmd {
     },
     /// List audio devices.
     Devices,
+    /// Write a WAV through the capture cleanup (noise suppression, gain), for inspection.
+    Clean { wav: std::path::PathBuf, out: std::path::PathBuf },
     /// Stream a WAV file through the recognizer in 100 ms chunks, as live audio would arrive.
     Transcribe {
         wav: std::path::PathBuf,
@@ -115,6 +118,13 @@ fn main() -> Result<()> {
             let t0 = std::time::Instant::now();
             let p = st.complete(&pcm)?;
             println!("prob={p:.4} ({:.0} ms)", t0.elapsed().as_secs_f32() * 1e3);
+            return Ok(());
+        }
+        Some(Cmd::Clean { wav, out }) => {
+            let (pcm, rate) = wav::read(&wav)?;
+            let x = audio::resample(&pcm, rate, aec::RATE);
+            let y = aec::Aec::cleanup_only().process(&x);
+            wav::write(&out, &y, aec::RATE)?;
             return Ok(());
         }
         Some(Cmd::Devices) => {
@@ -194,11 +204,19 @@ async fn serve(cli: Cli) -> Result<()> {
         };
         let aec = match &kokoro {
             Some((_, p)) if !cli.no_aec && cli.input_wav.is_empty() => Some(aec::Aec::new(p.far.clone())),
-            _ if cli.input_wav.is_empty() => Some(aec::Aec::cleanup_only()),
-            _ => None,
+            // test WAVs go through the same cleanup as the mic, without an echo to cancel
+            _ => Some(aec::Aec::cleanup_only()),
+        };
+        let vad = match vad::Vad::load(&models::vad_model(), &models::ort_lib()) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("voice detector unavailable, the recognizer runs on all audio: {e:#}");
+                None
+            }
         };
         let cfg = listen::Config {
             every_ms: 250,
+            vad,
             aec,
             turn,
             partials: !cli.no_partials,
