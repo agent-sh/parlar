@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.8] - 2026-10-01
+
+### Added
+- macOS floating indicator (`parlar-overlay`), the same swarm on AppKit, started at login by
+  `parlard service`. Built and started on CI only; validation on a real Mac is tracked in
+  agent-sh/parlar#26.
+- A session that loses voice focus is told where the voice went, in its own transcript.
 
 ### Changed
 - README: what Gatekeeper does with the unsigned macOS tarball, and how to clear the quarantine

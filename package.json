@@ -1,6 +1,6 @@
 {
   "name": "@agent-sh/parlar",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Voice conversation mode for Claude Code and Codex: talk to a running session and it answers out loud while it works.",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/agent-sh/parlar#readme",
