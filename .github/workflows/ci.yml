@@ -70,6 +70,9 @@ jobs:
             target/release/parlar.exe
             target/release/parlard.exe
             target/release/onnxruntime.dll
+            C:/Windows/System32/vcruntime140.dll
+            C:/Windows/System32/vcruntime140_1.dll
+            C:/Windows/System32/msvcp140.dll
           retention-days: 7
       - name: parlard answers on its named pipe
         shell: pwsh
@@ -104,6 +107,8 @@ jobs:
         run: |
           $prefix = "$env:RUNNER_TEMP\npm-prefix"
           $package = npm pack --pack-destination $env:RUNNER_TEMP --silent
+          # the release tarball carries the VC++ runtime; stand in for it with the runner's copy
+          foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') { Copy-Item "C:\Windows\System32\$dll" target\release\ }
           $env:PARLAR_NPM_LOCAL_DIR = "$PWD\target\release"
           npm install -g --prefix $prefix --foreground-scripts "$env:RUNNER_TEMP\$package"
           # no Git, no sh: only the npm prefix, node and Windows itself
@@ -237,8 +242,10 @@ jobs:
           name="parlar-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = Windows ]; then
-            # libmoonshine is linked in; ONNX Runtime ships next to the binaries
+            # libmoonshine is linked in; ONNX Runtime and the Visual C++ runtime (app-local, as
+            # Microsoft allows) ship next to the binaries, so a fresh Windows needs nothing else
             cp target/release/parlar.exe target/release/parlard.exe target/release/onnxruntime.dll "dist/$name/"
+            for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do cp "/c/Windows/System32/$dll" "dist/$name/"; done
           else
             cp target/release/parlar target/release/parlard "dist/$name/"
           fi
