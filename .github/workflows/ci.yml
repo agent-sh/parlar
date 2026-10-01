@@ -62,6 +62,15 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo build --locked --release
       - run: cargo test --locked --release
+      # the build, for trying it on a Windows desktop
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: parlar-windows-x86_64
+          path: |
+            target/release/parlar.exe
+            target/release/parlard.exe
+            target/release/onnxruntime.dll
+          retention-days: 7
       - name: parlard answers on its named pipe
         shell: pwsh
         # a hung pipe must fail fast, not stall the job
