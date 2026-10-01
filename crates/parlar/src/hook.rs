@@ -29,6 +29,9 @@ pub enum Event {
     StopWait,
     /// The user interrupted the turn (Codex's Interrupt event).
     Interrupt,
+    /// Background waiter armed when a turn starts (Claude Code asyncRewake on UserPromptSubmit):
+    /// it wakes the session if the turn is interrupted, typed or started by voice alike.
+    WaitParked,
 }
 
 /// A hook runs on every tool call, so a slow or stuck daemon must cost little.
@@ -44,8 +47,8 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
     o.cwd = input.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_string);
     o.harness = Some(harness);
     o.transcript = input.get("transcript_path").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
-    if event == Event::Wait {
-        return wait(&o);
+    if event == Event::Wait || event == Event::WaitParked {
+        return wait(&o, event == Event::WaitParked);
     }
     let Some(mut c) = Client::connect() else { return Ok(0) };
     let quick = Some(QUICK);
@@ -147,7 +150,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             // this waiter holds the turn open; parlard only lets it wait while the conversation
             // is on and this session has focus, and releases it when either changes
             drop(c);
-            let items = wait_for(&o, true);
+            let items = wait_for(&o, true, false);
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
             }
@@ -158,7 +161,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
                 quick,
             )?;
         }
-        Event::Wait => unreachable!("handled above"),
+        Event::Wait | Event::WaitParked => unreachable!("handled above"),
     }
     Ok(0)
 }
@@ -169,8 +172,8 @@ const RIDE_OUT: Duration = Duration::from_secs(300);
 /// Background idle waiter. It is detached from the harness, so it rides out parlard restarts:
 /// on a lost connection it reconnects for `RIDE_OUT` instead of leaving the session deaf. With
 /// no parlard at the start it exits at once, so a stopped parlar leaves nothing running.
-fn wait(o: &Origin) -> Result<i32> {
-    let items = wait_for(o, false);
+fn wait(o: &Origin, parked: bool) -> Result<i32> {
+    let items = wait_for(o, false, parked);
     if items.is_empty() {
         return Ok(0);
     }
@@ -181,7 +184,7 @@ fn wait(o: &Origin) -> Result<i32> {
 /// Wait for speech for this session, reconnecting through parlard restarts. Empty when the wait
 /// ends without speech: timed out, replaced by a newer waiter, released, or parlard gone.
 /// `holds_turn` is the blocking Stop waiter of harnesses without a background wake.
-fn wait_for(o: &Origin, holds_turn: bool) -> Vec<Utterance> {
+fn wait_for(o: &Origin, holds_turn: bool, parked: bool) -> Vec<Utterance> {
     let deadline = Instant::now() + Duration::from_millis(wait_ms());
     let mut down_since: Option<Instant> = None;
     let mut first = true;
@@ -200,7 +203,8 @@ fn wait_for(o: &Origin, holds_turn: bool) -> Vec<Utterance> {
         first = false;
         down_since = None;
         let left = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
-        let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn };
+        // a reconnect after a restart re-arms as parked too: the turn it was armed for may still run
+        let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn, parked };
         match c.call(&req, None) {
             // speech, or replaced by a newer waiter, released, or timed out: this one is done
             Ok(r) => return items(r),

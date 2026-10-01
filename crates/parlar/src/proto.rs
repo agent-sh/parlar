@@ -123,6 +123,10 @@ pub enum Request {
         /// conversation stops or focus moves to another session, so the harness never hangs.
         #[serde(default)]
         holds_turn: bool,
+        /// Armed at the start of a turn: it waits without ending the turn, and wakes the session
+        /// only if the turn ends without a Stop (an interrupt).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        parked: bool,
     },
     Say {
         origin: Origin,

@@ -728,7 +728,9 @@ impl Daemon {
                 // a stop takes everything said so far with it, so the reason reads in order
                 Response::Utterances { items: st.take(i), superseded: false }
             }
-            Request::Wait { origin, timeout_ms, holds_turn } => self.wait(origin, timeout_ms, holds_turn).await,
+            Request::Wait { origin, timeout_ms, holds_turn, parked } => {
+                self.wait(origin, timeout_ms, holds_turn, parked).await
+            }
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
             Request::Event { origin, event, tool, detail, call } => {
                 let mut st = self.state.lock().await;
@@ -902,7 +904,7 @@ impl Daemon {
         }
     }
 
-    async fn wait(&self, origin: Origin, timeout_ms: u64, holds_turn: bool) -> Response {
+    async fn wait(&self, origin: Origin, timeout_ms: u64, holds_turn: bool, parked: bool) -> Response {
         let (id, rx) = {
             let mut st = self.state.lock().await;
             let Some(i) = st.find_or_attach(&origin) else { return empty() };
@@ -912,24 +914,35 @@ impl Daemon {
                 return Response::Utterances { items: vec![], superseded: true };
             }
             let continued = st.sessions[i].blocked_at.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
-            if !holds_turn && continued {
-                // the Stop hook just continued this turn; this waiter belongs to a turn that did
-                // not end
-                return Response::Utterances { items: vec![], superseded: true };
+            if parked {
+                // armed for the turn that is starting: it changes nothing about the turn, and
+                // replaces the waiter the last Stop left, which this turn has parked
+                st.supersede(i);
+                let id = st.next_waiter;
+                st.next_waiter += 1;
+                let (tx, rx) = oneshot::channel();
+                st.sessions[i].waiter = Some(Waiter { id, tx, holds_turn: false });
+                (id, rx)
+            } else {
+                if !holds_turn && continued {
+                    // the Stop hook just continued this turn; this waiter belongs to a turn that did
+                    // not end
+                    return Response::Utterances { items: vec![], superseded: true };
+                }
+                st.sessions[i].in_turn = false;
+                st.sessions[i].running.clear();
+                st.emit_phase();
+                if !st.sessions[i].pending.is_empty() {
+                    st.sessions[i].in_turn = true;
+                    return Response::Utterances { items: st.take(i), superseded: false };
+                }
+                st.supersede(i);
+                let id = st.next_waiter;
+                st.next_waiter += 1;
+                let (tx, rx) = oneshot::channel();
+                st.sessions[i].waiter = Some(Waiter { id, tx, holds_turn });
+                (id, rx)
             }
-            st.sessions[i].in_turn = false;
-            st.sessions[i].running.clear();
-            st.emit_phase();
-            if !st.sessions[i].pending.is_empty() {
-                st.sessions[i].in_turn = true;
-                return Response::Utterances { items: st.take(i), superseded: false };
-            }
-            st.supersede(i);
-            let id = st.next_waiter;
-            st.next_waiter += 1;
-            let (tx, rx) = oneshot::channel();
-            st.sessions[i].waiter = Some(Waiter { id, tx, holds_turn });
-            (id, rx)
         };
         match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
             Ok(Ok(WaitResult::Items(items))) => Response::Utterances { items, superseded: false },
@@ -1188,10 +1201,9 @@ mod tests {
         })
         .await;
         let d2 = d.clone();
-        let w =
-            tokio::spawn(
-                async move { d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await },
-            );
+        let w = tokio::spawn(async move {
+            d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true, parked: false }).await
+        });
         tokio::time::sleep(Duration::from_millis(50)).await;
         d.handle(on(false)).await;
         let r = tokio::time::timeout(Duration::from_secs(2), w).await.expect("released").unwrap();
@@ -1326,8 +1338,13 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let served = tokio::spawn(d.clone().conn(b));
         let (_rd, mut wr) = a.into_split();
-        let mut v =
-            serde_json::to_vec(&Request::Wait { origin: o.clone(), timeout_ms: 60_000, holds_turn: false }).unwrap();
+        let mut v = serde_json::to_vec(&Request::Wait {
+            origin: o.clone(),
+            timeout_ms: 60_000,
+            holds_turn: false,
+            parked: false,
+        })
+        .unwrap();
         v.push(b'\n');
         wr.write_all(&v).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1388,7 +1405,7 @@ mod tests {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let o = talking_to(&d, "cx", 800).await;
         d.handle(set(Some(false), None)).await;
-        let r = d.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await;
+        let r = d.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true, parked: false }).await;
         assert_eq!(r, Response::Utterances { items: vec![], superseded: true });
     }
 
@@ -1521,9 +1538,9 @@ mod tests {
         let o = talking_to(&d, "esc", 920).await;
         let waiter = {
             let (d, o) = (d.clone(), o.clone());
-            tokio::spawn(
-                async move { d.handle(Request::Wait { origin: o, timeout_ms: 5_000, holds_turn: false }).await },
-            )
+            tokio::spawn(async move {
+                d.handle(Request::Wait { origin: o, timeout_ms: 5_000, holds_turn: false, parked: false }).await
+            })
         };
         tokio::time::sleep(Duration::from_millis(50)).await;
         let ev = |event| Request::Event { origin: o.clone(), event, tool: None, detail: None, call: None };
@@ -1554,6 +1571,36 @@ mod tests {
             let body = format!("{}{body}", "x".repeat(extra));
             std::fs::write(&p, &body).unwrap();
             assert!(ends_interrupted(&p, body.len() as u64), "offset {extra}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_started_by_voice_can_be_woken_after_an_interrupt() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let o = talking_to(&d, "voice-esc", 930).await;
+        let wait = |parked: bool| {
+            let (d, o) = (d.clone(), o.clone());
+            tokio::spawn(async move {
+                d.handle(Request::Wait { origin: o, timeout_ms: 5_000, holds_turn: false, parked }).await
+            })
+        };
+        // idle: the Stop waiter takes the first words and the session wakes
+        let stop_waiter = wait(false);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.handle(Request::Hear { text: "run the slow suite".into(), heard: None }).await;
+        assert!(matches!(stop_waiter.await.unwrap(), Response::Utterances { superseded: false, .. }));
+        // the woken turn starts: UserPromptSubmit arms a parked waiter
+        let parked = wait(true);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(d.state.lock().await.sessions[0].in_turn, "arming does not end the turn");
+        // Escape, then speech: the parked waiter wakes the session again
+        let ev =
+            Request::Event { origin: o.clone(), event: TurnEvent::Interrupted, tool: None, detail: None, call: None };
+        d.handle(ev).await;
+        d.handle(Request::Hear { text: "never mind".into(), heard: None }).await;
+        match tokio::time::timeout(Duration::from_secs(1), parked).await {
+            Ok(Ok(Response::Utterances { items, superseded: false })) => assert!(items[0].text.ends_with("never mind")),
+            r => panic!("{r:?}"),
         }
     }
 }
