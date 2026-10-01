@@ -143,8 +143,8 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
             // this waiter holds the turn open; parlard only lets it wait while the conversation
             // is on and this session has focus, and releases it when either changes
-            let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms(), holds_turn: true }, None)?;
-            let items = items(r);
+            drop(c);
+            let items = wait_for(&o, true);
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
             }
@@ -161,17 +161,29 @@ const RIDE_OUT: Duration = Duration::from_secs(300);
 /// on a lost connection it reconnects for `RIDE_OUT` instead of leaving the session deaf. With
 /// no parlard at the start it exits at once, so a stopped parlar leaves nothing running.
 fn wait(o: &Origin) -> Result<i32> {
+    let items = wait_for(o, false);
+    if items.is_empty() {
+        return Ok(0);
+    }
+    eprintln!("{}", format::utterances(&items));
+    Ok(2)
+}
+
+/// Wait for speech for this session, reconnecting through parlard restarts. Empty when the wait
+/// ends without speech: timed out, replaced by a newer waiter, released, or parlard gone.
+/// `holds_turn` is the blocking Stop waiter of harnesses without a background wake.
+fn wait_for(o: &Origin, holds_turn: bool) -> Vec<Utterance> {
     let deadline = Instant::now() + Duration::from_millis(wait_ms());
     let mut down_since: Option<Instant> = None;
     let mut first = true;
     loop {
         if Instant::now() >= deadline {
-            return Ok(0);
+            return Vec::new();
         }
         let Some(mut c) = Client::connect() else {
             let down = *down_since.get_or_insert_with(Instant::now);
             if first || down.elapsed() >= RIDE_OUT {
-                return Ok(0);
+                return Vec::new();
             }
             std::thread::sleep(Duration::from_secs(3));
             continue;
@@ -179,18 +191,10 @@ fn wait(o: &Origin) -> Result<i32> {
         first = false;
         down_since = None;
         let left = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
-        let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn: false };
+        let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn };
         match c.call(&req, None) {
-            Ok(Response::Utterances { items, superseded }) => {
-                if !items.is_empty() {
-                    eprintln!("{}", format::utterances(&items));
-                    return Ok(2);
-                }
-                // replaced by a newer waiter, released, or timed out: this one is done
-                let _ = superseded;
-                return Ok(0);
-            }
-            Ok(_) => return Ok(0),
+            // speech, or replaced by a newer waiter, released, or timed out: this one is done
+            Ok(r) => return items(r),
             Err(_) => std::thread::sleep(Duration::from_secs(2)),
         }
     }

@@ -727,7 +727,13 @@ impl Daemon {
                 if !st.active || st.mic_muted {
                     return Response::Error { message: "voice mode is off or the mic is muted".into() };
                 }
-                let (id, delivered_to) = st.deliver(text, heard);
+                let (id, delivered_to) = st.deliver(text.clone(), heard);
+                // the same answer the mic path gives, so tests through `ctl hear` see it too
+                let ack = st.busy_ack(&text);
+                drop(st);
+                if let Some(ack) = ack {
+                    self.announce(ack).await;
+                }
                 Response::Heard { id, delivered_to }
             }
             Request::Devices => match &self.audio {

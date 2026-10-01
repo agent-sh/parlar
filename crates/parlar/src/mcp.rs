@@ -61,7 +61,7 @@ pub fn serve(harness: Harness) -> Result<()> {
 
 fn attach(harness: Harness) -> Option<Client> {
     let mut c = Client::connect()?;
-    let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let cwd = project_dir().unwrap_or_default();
     let req = Request::Attach { origin: mcp_origin(None), harness, cwd, mcp: true };
     c.call(&req, Some(Duration::from_secs(2))).ok()?;
     Some(c)
@@ -146,4 +146,15 @@ fn reply_error(out: &mut impl Write, id: Option<Value>, code: i64, message: &str
     out.write_all(&v)?;
     out.flush()?;
     Ok(())
+}
+
+/// The folder the harness runs in, as the MCP server sees it. Codex starts plugin servers in the
+/// plugin's own root (`<root>/bin/parlar`), which says nothing about the project, so that one is
+/// not reported and the hooks supply the folder instead.
+fn project_dir() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let plugin_root = exe.as_deref().and_then(|e| e.parent()).and_then(|b| b.parent());
+    let cwd_real = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+    (plugin_root != Some(cwd_real.as_path())).then(|| cwd.display().to_string())
 }
