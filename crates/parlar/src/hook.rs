@@ -48,6 +48,9 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
     o.harness = Some(harness);
     o.transcript = input.get("transcript_path").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
     if event == Event::Wait || event == Event::WaitParked {
+        if headless() {
+            return Ok(0);
+        }
         return wait(&o, event == Event::WaitParked);
     }
     let Some(mut c) = Client::connect() else { return Ok(0) };
@@ -164,6 +167,13 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
         Event::Wait | Event::WaitParked => unreachable!("handled above"),
     }
     Ok(0)
+}
+
+/// A headless run (`claude -p`, the Agent SDK) waits for its background hooks before it exits, so
+/// a waiter there would hold it for hours. Nobody talks to such a run anyway. Claude Code marks
+/// them with an `sdk-*` entrypoint; interactive sessions say `cli`.
+fn headless() -> bool {
+    std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok_and(|e| e.starts_with("sdk"))
 }
 
 /// How long a waiter keeps trying to reach a parlard that went away (a restart takes seconds).

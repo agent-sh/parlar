@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4] - 2026-10-01
+
+### Fixed
+- `claude -p` and Agent SDK runs no longer hang while parlard is running. They wait for their
+  background hooks before exiting, and parlar's voice waiters waited for speech for up to 23
+  hours. The waiters now exit at once in headless runs (`CLAUDE_CODE_ENTRYPOINT=sdk-*`).
+
 ## [0.1.3] - 2026-10-01
 
 ### Added
