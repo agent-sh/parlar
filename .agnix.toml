@@ -3,6 +3,8 @@ target = "Generic"
 exclude = [
   ".git/**",
   "target/**",
+  # a Codex hooks file: agnix checks it against Claude Code's events, and Codex also has Interrupt
+  "plugin/codex/hooks/hooks.json",
 ]
 
 [rules]

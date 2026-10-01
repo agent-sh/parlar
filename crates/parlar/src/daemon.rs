@@ -419,11 +419,14 @@ fn ends_interrupted(path: &Path, len: u64) -> bool {
     if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
         return false;
     }
-    let mut buf = String::new();
-    if f.take(TAIL).read_to_string(&mut buf).is_err() {
+    let mut buf = Vec::new();
+    if f.take(TAIL).read_to_end(&mut buf).is_err() {
         return false;
     }
-    last_message_interrupted(&buf)
+    // the cut can land inside a line, even inside a character: drop the partial first line
+    let text = String::from_utf8_lossy(&buf);
+    let whole = if len > TAIL { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+    last_message_interrupted(whole)
 }
 
 fn last_message_interrupted(tail: &str) -> bool {
@@ -1535,6 +1538,22 @@ mod tests {
                 assert!(items[0].text.ends_with("and the docs"))
             }
             r => panic!("{r:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tail_cut_inside_a_character_still_finds_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.jsonl");
+        // long lines of multibyte text, so the 64 KB cut lands inside a character
+        let filler = format!(r#"{{"type":"assistant","message":{{"content":"{}"}}}}"#, "é".repeat(40_000));
+        let marker = r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#;
+        let body = format!("{filler}\n{filler}\n{marker}\n");
+        std::fs::write(&p, &body).unwrap();
+        for extra in 0..3 {
+            let body = format!("{}{body}", "x".repeat(extra));
+            std::fs::write(&p, &body).unwrap();
+            assert!(ends_interrupted(&p, body.len() as u64), "offset {extra}");
         }
     }
 }
