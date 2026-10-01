@@ -1,6 +1,6 @@
 {
   "name": "parlar",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Voice conversation mode: talk to this session and hear it talk back",
   "homepage": "https://github.com/agent-sh/parlar",
   "repository": "https://github.com/agent-sh/parlar",
