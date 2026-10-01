@@ -240,12 +240,21 @@ pub struct Mic {
     want: Mutex<Option<String>>,
     /// The device picked last, open or not.
     chosen: Mutex<Option<String>>,
+    /// Held across every open and close, so a reopen racing a stop cannot leave a stream running.
+    switching: Mutex<()>,
 }
 
 impl Mic {
     pub fn new(gate: Arc<AtomicBool>) -> (Arc<Mic>, Frames) {
         let (tx, rx) = mpsc::sync_channel(MIC_QUEUE);
-        let m = Arc::new(Mic { tx, gate, running: Mutex::new(None), want: Mutex::new(None), chosen: Mutex::new(None) });
+        let m = Arc::new(Mic {
+            tx,
+            gate,
+            running: Mutex::new(None),
+            want: Mutex::new(None),
+            chosen: Mutex::new(None),
+            switching: Mutex::new(()),
+        });
         let weak = Arc::downgrade(&m);
         supervise("mic", &MIC_STALE, move || {
             let m = weak.upgrade()?;
@@ -261,18 +270,19 @@ impl Mic {
                 std::thread::sleep(Duration::from_millis(100));
                 let Some(m) = weak.upgrade() else { return };
                 let on = m.gate.load(Ordering::SeqCst);
-                if on == was {
-                    continue;
-                }
-                was = on;
-                if on {
+                if !on {
+                    // checked every tick, not only on the edge: nothing may hold the mic while off
+                    let _switching = m.switching.lock().unwrap();
+                    if m.running.lock().unwrap().take().is_some() {
+                        eprintln!("mic closed");
+                    }
+                } else if !was {
                     let want = m.want.lock().unwrap().clone();
                     if let Err(e) = m.open(want.as_deref()).or_else(|_| m.open(None)) {
                         eprintln!("mic: {e:#}");
                     }
-                } else if m.running.lock().unwrap().take().is_some() {
-                    eprintln!("mic closed");
                 }
+                was = on;
             }
         });
         (m, Frames { rx, rate: MIC_RATE })
@@ -286,6 +296,7 @@ impl Mic {
     /// stream only runs while the conversation is on; otherwise the device is remembered and
     /// opened when it starts.
     pub fn open(&self, device: Option<&str>) -> Result<()> {
+        let _switching = self.switching.lock().unwrap();
         let host = host();
         let dev = find(&host, device, true)?;
         let id = dev_id(&dev);
@@ -310,7 +321,10 @@ impl Mic {
                 f => Err(anyhow!("unsupported mic sample format {f:?}")),
             }
         })?;
-        *self.running.lock().unwrap() = Some(running);
+        // the conversation may have stopped while the device opened
+        if self.gate.load(Ordering::SeqCst) {
+            *self.running.lock().unwrap() = Some(running);
+        }
         Ok(())
     }
 }

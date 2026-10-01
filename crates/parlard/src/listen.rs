@@ -235,6 +235,8 @@ fn run(
                 lines.clear();
                 ep = Endpointer::default();
                 while frames.rx.try_recv().is_ok() {}
+                // the speech start was reported; its end must be too, or the phase stays listening
+                let _ = tx.send(Heard::Talking(false));
             }
             if closed_since.get_or_insert_with(Instant::now).elapsed() > UNLOAD_AFTER {
                 return Ok(Exit::Idle);
