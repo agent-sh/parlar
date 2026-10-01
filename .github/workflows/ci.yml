@@ -76,6 +76,26 @@ jobs:
           target\release\parlar.exe ctl state
           Stop-Process -Id $d.Id
           Get-Content parlard.log
+      - name: plugin launcher (.cmd) runs parlar, and stays quiet without it
+        shell: cmd
+        run: |
+          set "PARLAR_BIN=%CD%\target\release\parlar.exe"
+          call plugin\claude\bin\parlar.cmd --version || exit /b 1
+          set "PARLAR_BIN="
+          set "PATH=C:\Windows\System32"
+          echo {} | call plugin\claude\bin\parlar.cmd hook prompt || exit /b 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: npm package installs on Windows
+        shell: bash
+        run: |
+          prefix="$RUNNER_TEMP/npm-prefix"
+          package="$(npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+          PARLAR_NPM_LOCAL_DIR="$PWD/target/release" npm install -g --prefix "$prefix" --foreground-scripts "$RUNNER_TEMP/$package"
+          ls "$prefix"
+          "$prefix/parlar" --version
+          "$prefix/parlard" --version
 
   msrv:
     name: rust-version
@@ -183,17 +203,27 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-      - run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
       - run: cargo build --locked --release
       - name: Stage artifact
+        shell: bash
         run: |
           name="parlar-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp target/release/parlar target/release/parlard README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            # libmoonshine is linked in; ONNX Runtime ships next to the binaries
+            cp target/release/parlar.exe target/release/parlard.exe target/release/onnxruntime.dll "dist/$name/"
+          else
+            cp target/release/parlar target/release/parlard "dist/$name/"
+          fi
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -249,9 +279,9 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME"
           # the install script downloads these, so they must be live first
           base="https://github.com/agent-sh/parlar/releases/download/v${version}"
-          for arch in x86_64 aarch64; do
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc; do
             for suffix in "" ".sha256"; do
-              asset="parlar-v${version}-${arch}-unknown-linux-gnu.tar.gz${suffix}"
+              asset="parlar-v${version}-${target}.tar.gz${suffix}"
               for attempt in $(seq 1 30); do
                 curl -fsSIL "${base}/${asset}" >/dev/null && break
                 [ "$attempt" = 30 ] && { echo "release asset not available: ${asset}" >&2; exit 1; }

@@ -21,7 +21,8 @@
     "linux"
   ],
   "os": [
-    "linux"
+    "linux",
+    "win32"
   ],
   "cpu": [
     "x64",

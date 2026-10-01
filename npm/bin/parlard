@@ -4,6 +4,8 @@
 dir=$(dirname "$(readlink -f "$0")")
 name=$(basename "$(readlink -f "$0")")
 bin=$dir/native/$name
+# Windows (Git Bash, which npm's .cmd shims run this through): the binary has .exe
+[ -x "$bin.exe" ] && bin=$bin.exe
 if [ ! -x "$bin" ]; then
     echo "$name: native binary missing at $bin; run npm rebuild -g @agent-sh/parlar" >&2
     exit 127

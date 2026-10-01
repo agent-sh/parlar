@@ -13,8 +13,15 @@ const { execFileSync } = require('node:child_process');
 
 const pkg = require('../package.json');
 
-const archToTarget = { x64: 'x86_64', arm64: 'aarch64' };
-const binaries = ['parlar', 'parlard'];
+// the release builds there are, per platform and CPU
+const TARGETS = {
+  'linux-x64': 'x86_64-unknown-linux-gnu',
+  'linux-arm64': 'aarch64-unknown-linux-gnu',
+  'win32-x64': 'x86_64-pc-windows-msvc',
+};
+// on Windows libmoonshine is linked in, and ONNX Runtime ships next to the binaries
+const binaries =
+  process.platform === 'win32' ? ['parlar.exe', 'parlard.exe', 'onnxruntime.dll'] : ['parlar', 'parlard'];
 const nativeDir = path.join(__dirname, 'bin', 'native');
 
 function fail(message) {
@@ -85,16 +92,13 @@ async function main() {
     console.log(`[parlar] installed local binaries from ${process.env.PARLAR_NPM_LOCAL_DIR}`);
     return;
   }
-  if (process.platform !== 'linux') {
-    fail(`unsupported platform: ${process.platform}. parlar is Linux only.`);
-  }
-  const arch = archToTarget[process.arch];
-  if (!arch) {
-    fail(`unsupported CPU architecture: ${process.arch}. Supported: x64, arm64.`);
+  const target = TARGETS[`${process.platform}-${process.arch}`];
+  if (!target) {
+    fail(`no parlar build for ${process.platform} ${process.arch}. Builds: Linux x64 and arm64, Windows x64.`);
   }
 
   const tag = `v${pkg.version}`;
-  const asset = `parlar-${tag}-${arch}-unknown-linux-gnu`;
+  const asset = `parlar-${tag}-${target}`;
   const base = process.env.PARLAR_NPM_DOWNLOAD_BASE || `https://github.com/agent-sh/parlar/releases/download/${tag}`;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'parlar-npm-'));
   try {
