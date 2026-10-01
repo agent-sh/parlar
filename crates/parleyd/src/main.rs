@@ -145,7 +145,12 @@ async fn serve(cli: Cli) -> Result<()> {
         voice::Engine::Silent
     } else {
         let player = audio::Player::new();
-        player.open(cli.output.as_deref())?;
+        let out = cli.output.clone().or_else(|| audio::Saved::load().output);
+        if let Err(e) = player.open(out.as_deref()) {
+            // a saved device may be gone (headphones off); fall back to the default
+            eprintln!("speaker {out:?}: {e:#}; using the default");
+            player.open(None)?;
+        }
         let tts = parley_moonshine::Tts::load(&models::tts_dir(), "en_us", &cli.voice, &[])?;
         let k = Arc::new(speak::Kokoro::new(tts, player.clone()));
         kokoro = Some((k.clone(), player));
@@ -160,7 +165,11 @@ async fn serve(cli: Cli) -> Result<()> {
         None
     } else if cli.input_wav.is_empty() {
         let (m, frames) = audio::Mic::new(gate);
-        m.open(cli.input.as_deref())?;
+        let inp = cli.input.clone().or_else(|| audio::Saved::load().input);
+        if let Err(e) = m.open(inp.as_deref()) {
+            eprintln!("mic {inp:?}: {e:#}; using the default");
+            m.open(None)?;
+        }
         mic = Some(m);
         Some(frames)
     } else {

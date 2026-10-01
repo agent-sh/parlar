@@ -370,6 +370,36 @@ pub struct Control {
     pub player: Option<Arc<Player>>,
 }
 
+/// The devices the person picked, kept across restarts in `$XDG_CONFIG_HOME/parley/devices.json`.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct Saved {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
+fn saved_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
+    base.join("parley/devices.json")
+}
+
+impl Saved {
+    pub fn load() -> Saved {
+        std::fs::read_to_string(saved_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    fn store(&self) {
+        let p = saved_path();
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Ok(s) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(p, s);
+        }
+    }
+}
+
 impl parley::daemon::Audio for Control {
     fn devices(&self) -> (Vec<Device>, Vec<Device>) {
         let (mut ins, mut outs) = list().unwrap_or_default();
@@ -384,10 +414,18 @@ impl parley::daemon::Audio for Control {
         (ins, outs)
     }
     fn set_input(&self, id: &str) -> Result<()> {
-        self.mic.as_ref().ok_or_else(|| anyhow!("mic is disabled"))?.open(Some(id))
+        self.mic.as_ref().ok_or_else(|| anyhow!("mic is disabled"))?.open(Some(id))?;
+        let mut saved = Saved::load();
+        saved.input = Some(id.to_string());
+        saved.store();
+        Ok(())
     }
     fn set_output(&self, id: &str) -> Result<()> {
-        self.player.as_ref().ok_or_else(|| anyhow!("speaker is disabled"))?.open(Some(id))
+        self.player.as_ref().ok_or_else(|| anyhow!("speaker is disabled"))?.open(Some(id))?;
+        let mut saved = Saved::load();
+        saved.output = Some(id.to_string());
+        saved.store();
+        Ok(())
     }
 }
 
