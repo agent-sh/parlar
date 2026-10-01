@@ -118,8 +118,9 @@ parlard service    # systemd user service for this parlard
 ```
 
 On Windows, `cargo install` needs the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-installed; `parlard fetch` adds ONNX Runtime. On macOS, `parlard fetch` adds ONNX Runtime and
-`parlard service` installs a launchd agent (`~/Library/LaunchAgents/dev.agent-sh.parlard.plist`).
+installed; `parlard fetch` adds ONNX Runtime. On macOS, `parlard fetch` adds ONNX Runtime and links
+it next to the `parlard` binary (macOS binds it at launch), and `parlard service` installs a launchd
+agent (`~/Library/LaunchAgents/dev.agent-sh.parlard.plist`).
 
 ### Option E: prebuilt binaries
 

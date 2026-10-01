@@ -143,11 +143,14 @@ jobs:
       - name: parlard answers on its socket, hooks see their harness
         timeout-minutes: 3
         run: |
-          # an installed binary must start with no dylib beside it (it is weakly linked and
-          # opened from the lib folder by parlard fetch), like cargo install leaves it
+          # an installed binary (cargo install leaves no dylib beside it) must start, fetch the
+          # runtime, link it beside itself, and then speak and recognize through it
           mkdir -p "$RUNNER_TEMP/bin" && cp target/release/parlar target/release/parlard "$RUNNER_TEMP/bin/"
           "$RUNNER_TEMP/bin/parlard" --version
-          "$RUNNER_TEMP/bin/parlard" config
+          XDG_DATA_HOME="$RUNNER_TEMP/data" "$RUNNER_TEMP/bin/parlard" fetch
+          test -L "$RUNNER_TEMP/bin/libonnxruntime.1.23.0.dylib"
+          XDG_DATA_HOME="$RUNNER_TEMP/data" "$RUNNER_TEMP/bin/parlard" speak --sentences "parlar runs on a Mac." --out "$RUNNER_TEMP/m.wav"
+          XDG_DATA_HOME="$RUNNER_TEMP/data" "$RUNNER_TEMP/bin/parlard" final "$RUNNER_TEMP/m.wav" | grep -i mac
           target/release/parlard --no-mic --silent 2> parlard.log &
           sleep 3
           target/release/parlar ctl state

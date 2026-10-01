@@ -151,32 +151,31 @@ pub fn moonshine() -> Result<()> {
     parlar_moonshine::open(&lib)
 }
 
-/// ONNX Runtime is weakly linked on macOS (see parlar-moonshine's build script): open it from
-/// the lib folder before the first call, so its symbols are bound wherever the file lives.
+/// ONNX Runtime is weakly linked on macOS (see parlar-moonshine's build script), so parlard
+/// starts without it, and `fetch` can run first. dyld binds the weak imports at launch, from
+/// `@executable_path` or `@executable_path/../lib/parlar`; a library found only later cannot be
+/// bound into a running process. So: if it was not found at launch, say where `fetch` put it.
 #[cfg(target_os = "macos")]
 fn load_ort(lib: &Path) -> Result<()> {
-    use std::os::unix::ffi::OsStrExt;
     unsafe extern "C" {
-        fn dlopen(path: *const core::ffi::c_char, flags: i32) -> *mut core::ffi::c_void;
-        fn dlerror() -> *const core::ffi::c_char;
+        fn dlsym(handle: *mut core::ffi::c_void, name: *const core::ffi::c_char) -> *mut core::ffi::c_void;
     }
-    const RTLD_NOW: i32 = 2;
-    const RTLD_GLOBAL: i32 = 8;
-    let c = std::ffi::CString::new(lib.as_os_str().as_bytes())?;
-    // SAFETY: a NUL-terminated path; the handle is kept for the life of the process
-    let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
-    if h.is_null() {
-        // SAFETY: dlerror returns a static string or null
-        let msg = unsafe { dlerror() };
-        let msg = if msg.is_null() {
-            String::new()
-        } else {
-            // SAFETY: non-null, NUL-terminated
-            unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy().into_owned()
-        };
-        bail!("load {}: {msg}", lib.display());
+    // RTLD_DEFAULT: the images dyld loaded at launch, which is where the weak dependency landed
+    // if it was found
+    let rtld_default = -2isize as *mut core::ffi::c_void;
+    // SAFETY: a NUL-terminated symbol name; the result is only compared with null
+    let bound = unsafe { !dlsym(rtld_default, c"OrtGetApiBase".as_ptr()).is_null() };
+    if bound {
+        return Ok(());
     }
-    Ok(())
+    let exe = std::env::current_exe()?;
+    let beside = exe.with_file_name(ORT);
+    bail!(
+        "ONNX Runtime was not found when parlard started. It is at {}; link it next to the binary and start again:\n  ln -sf {} {}",
+        lib.display(),
+        lib.display(),
+        beside.display()
+    );
 }
 
 /// onnxruntime.dll is delay-loaded (see parlar-moonshine's build script): point the loader at the
@@ -227,6 +226,30 @@ fn fetch_moonshine() -> Result<()> {
         std::fs::rename(tmp.join(inner).join(lib), dest.join(lib)).with_context(|| format!("install {lib}"))?;
     }
     std::fs::remove_dir_all(&tmp)?;
+    #[cfg(target_os = "macos")]
+    link_beside_binaries(&dest)?;
+    Ok(())
+}
+
+/// macOS binds ONNX Runtime at launch from `@executable_path`, so a copy installed anywhere
+/// (cargo install, a tarball) gets a symlink to the fetched library next to it.
+#[cfg(target_os = "macos")]
+fn link_beside_binaries(dest: &Path) -> Result<()> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let link = exe.with_file_name(ORT);
+    if link.exists() {
+        return Ok(());
+    }
+    match std::os::unix::fs::symlink(dest.join(ORT), &link) {
+        Ok(()) => eprintln!("linked {} next to parlard", ORT),
+        Err(e) => eprintln!(
+            "could not link {} next to {} ({e}); run: ln -sf {} {}",
+            ORT,
+            exe.display(),
+            dest.join(ORT).display(),
+            link.display()
+        ),
+    }
     Ok(())
 }
 
