@@ -100,10 +100,7 @@ fn call(daemon: &mut Option<Client>, harness: Harness, msg: &Value) -> Value {
     let Some(text) = args.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty()) else {
         return text_result("say needs non-empty text.", true);
     };
-    let kind: SayKind = args
-        .get("kind")
-        .and_then(|k| serde_json::from_value(k.clone()).ok())
-        .unwrap_or_default();
+    let kind: SayKind = args.get("kind").and_then(|k| serde_json::from_value(k.clone()).ok()).unwrap_or_default();
     // Codex sends its session id with every call; Claude Code does not, and is matched by pid
     let session = ["/params/_meta/sessionId", "/params/_meta/threadId"]
         .iter()
@@ -118,7 +115,11 @@ fn call(daemon: &mut Option<Client>, harness: Harness, msg: &Value) -> Value {
         let Some(c) = daemon.as_mut() else { break };
         match c.call(&req, Some(Duration::from_secs(5))) {
             Ok(Response::Said { spoken, items }) => {
-                let mut s = String::from(if spoken { "Said." } else { "Not spoken: this session does not have voice focus or voice output is off. Shown as text." });
+                let mut s = String::from(if spoken {
+                    "Said."
+                } else {
+                    "Not spoken: this session does not have voice focus or voice output is off. Shown as text."
+                });
                 if !items.is_empty() {
                     s.push_str("\nThe user said meanwhile:\n");
                     s.push_str(&format::utterances(&items));

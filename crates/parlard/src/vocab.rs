@@ -46,9 +46,11 @@ impl Vocab {
                 }
                 if is_file
                     && let Some((stem, _)) = part.rsplit_once('.')
-                        && stem.len() > 2 && seen.insert(stem.to_lowercase()) {
-                            ranked.push((depth + 1, stem.to_string()));
-                        }
+                    && stem.len() > 2
+                    && seen.insert(stem.to_lowercase())
+                {
+                    ranked.push((depth + 1, stem.to_string()));
+                }
             }
         }
         // shallow names first: they are the ones people say
@@ -91,7 +93,12 @@ fn bare(w: &str) -> String {
 }
 
 fn git_files(dir: &Path) -> Option<Vec<String>> {
-    let out = Command::new("git").arg("-C").arg(dir).args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

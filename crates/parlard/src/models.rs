@@ -28,12 +28,15 @@ pub fn tts_dir() -> PathBuf {
 }
 
 const TURN_FILE: &str = "smart-turn-v3.2-cpu.onnx";
-const TURN_URL: &str = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx";
+const TURN_URL: &str = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx";
+const TURN_SHA256: &str = "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f";
 const TURN_SIZE: u64 = 8_679_182;
 
 const VAD_FILE: &str = "silero_vad.onnx";
-const VAD_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx";
+const VAD_URL: &str =
+    "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx";
 const VAD_SIZE: u64 = 2_327_524;
+const VAD_SHA256: &str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
 
 pub fn vad_model() -> PathBuf {
     root().join("vad").join(VAD_FILE)
@@ -146,7 +149,8 @@ fn fetch_moonshine() -> Result<()> {
         bail!("unpack {name}.tar.gz failed");
     }
     for lib in [ORT, MOONSHINE] {
-        std::fs::rename(tmp.join(&name).join("lib").join(lib), dest.join(lib)).with_context(|| format!("install {lib}"))?;
+        std::fs::rename(tmp.join(&name).join("lib").join(lib), dest.join(lib))
+            .with_context(|| format!("install {lib}"))?;
     }
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
@@ -239,7 +243,8 @@ fn file_crc32c(path: &Path) -> Result<u32> {
 
 /// Phonon-2 in ONNX (tiyuvta/Phonon-2-ONNX), pinned to one revision: the int8 encoder, the fp32
 /// decoder, its own preprocessor, vocab and config, each checked by sha256.
-const PHONON_REPO: &str = "https://huggingface.co/tiyuvta/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
+const PHONON_REPO: &str =
+    "https://huggingface.co/tiyuvta/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
 const PHONON_FILES: &[(&str, u64, &str)] = &[
     ("encoder-model.int8.onnx", 614_486_780, "3c100e38ca2e70623c928ab5c5414c62848603ea3d943a7f2e1c3ce1d92fc04b"),
     ("decoder_joint-model.onnx", 72_518_934, "420125e0e13596692320c35ef648eee9bf4583718c7896c8732ebf6f50b9ca0d"),
@@ -254,19 +259,24 @@ pub fn fetch(voice: &str) -> Result<()> {
     let stt = root().join("stt/phonon-2");
     let files = PHONON_FILES
         .iter()
-        .map(|(n, size, sha)| File { sha256: Some((*sha).into()), ..File::new(n, &format!("{PHONON_REPO}/{n}"), *size) })
+        .map(|(n, size, sha)| File {
+            sha256: Some((*sha).into()),
+            ..File::new(n, &format!("{PHONON_REPO}/{n}"), *size)
+        })
         .collect();
     download(&Manifest { groups: vec![Group { files }] }, &stt)?;
     let tts = parlar_moonshine::tts_manifest("en", &[("voice", voice)])?;
     download(&serde_json::from_str(&tts)?, &tts_dir())?;
     let turn = Manifest {
         groups: vec![Group {
-            files: vec![File::new(TURN_FILE, TURN_URL, TURN_SIZE)],
+            files: vec![File { sha256: Some(TURN_SHA256.into()), ..File::new(TURN_FILE, TURN_URL, TURN_SIZE) }],
         }],
     };
     download(&turn, &root().join("turn"))?;
     let vad = Manifest {
-        groups: vec![Group { files: vec![File::new(VAD_FILE, VAD_URL, VAD_SIZE)] }],
+        groups: vec![Group {
+            files: vec![File { sha256: Some(VAD_SHA256.into()), ..File::new(VAD_FILE, VAD_URL, VAD_SIZE) }],
+        }],
     };
     download(&vad, &root().join("vad"))?;
     Ok(())

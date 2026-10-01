@@ -27,11 +27,12 @@ impl Features {
     pub fn new() -> Features {
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(N_FFT);
         // periodic Hann
-        let window = (0..N_FFT).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N_FFT as f32).cos()).collect();
+        let window =
+            (0..N_FFT).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N_FFT as f32).cos()).collect();
         Features { fft, window, mel: mel_filters() }
     }
 
-    /// Log-mel features for the last 8 s of `audio` (16 kHz), row-major [80][800].
+    /// Log-mel features for the last 8 s of `audio` (16 kHz), row-major `[80][800]`.
     pub fn compute(&self, audio: &[f32]) -> Vec<f32> {
         let audio = &audio[audio.len().saturating_sub(SECS * RATE)..];
         let n = audio.len();
@@ -46,7 +47,13 @@ impl Features {
         let pad = N_FFT / 2;
         let len = x.len();
         let at = |i: isize| -> f32 {
-            let i = if i < 0 { -i } else if i as usize >= len { 2 * (len as isize - 1) - i } else { i };
+            let i = if i < 0 {
+                -i
+            } else if i as usize >= len {
+                2 * (len as isize - 1) - i
+            } else {
+                i
+            };
             x[i as usize]
         };
         let bins = N_FFT / 2 + 1;
@@ -162,7 +169,8 @@ mod tests {
     #[test]
     fn features_have_model_shape_and_range() {
         let f = Features::new();
-        let tone: Vec<f32> = (0..RATE * 2).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin()).collect();
+        let tone: Vec<f32> =
+            (0..RATE * 2).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / RATE as f32).sin()).collect();
         let out = f.compute(&tone);
         assert_eq!(out.len(), 80 * 800);
         let max = out.iter().copied().fold(f32::MIN, f32::max);

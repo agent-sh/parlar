@@ -165,7 +165,12 @@ impl Speaker for Kokoro {
 impl Kokoro {
     /// Feed synthesized sentences to the speaker until they are all heard, the user cuts in, or
     /// the speaker stops taking audio. Returns the words heard before a cut.
-    fn play(&self, rx: std::sync::mpsc::Receiver<(String, Vec<f32>, u32)>, cancel: &AtomicBool, stop: &AtomicBool) -> Option<String> {
+    fn play(
+        &self,
+        rx: std::sync::mpsc::Receiver<(String, Vec<f32>, u32)>,
+        cancel: &AtomicBool,
+        stop: &AtomicBool,
+    ) -> Option<String> {
         // (sentence, seconds of audio up to its end) for everything handed to the speaker
         let mut pushed: Vec<(String, f32)> = Vec::new();
         let mut total = 0f32;
@@ -175,7 +180,8 @@ impl Kokoro {
                 stop.store(true, Ordering::SeqCst);
                 let played = total - self.player.queued_secs();
                 self.player.clear();
-                let heard: Vec<&str> = pushed.iter().filter(|(_, end)| *end <= played + 0.05).map(|(t, _)| t.as_str()).collect();
+                let heard: Vec<&str> =
+                    pushed.iter().filter(|(_, end)| *end <= played + 0.05).map(|(t, _)| t.as_str()).collect();
                 return Some(heard.join(" "));
             }
             if !done {
@@ -210,10 +216,8 @@ pub fn tighten(pcm: &[f32], rate: u32) -> Vec<f32> {
     let block = (rate / 100) as usize; // 10 ms
     let max_pause = 25; // blocks: 250 ms
     let tail = 18; // blocks kept after the sentence: 180 ms
-    let quiet: Vec<bool> = pcm
-        .chunks(block)
-        .map(|b| (b.iter().map(|v| v * v).sum::<f32>() / b.len() as f32).sqrt() < 0.006)
-        .collect();
+    let quiet: Vec<bool> =
+        pcm.chunks(block).map(|b| (b.iter().map(|v| v * v).sum::<f32>() / b.len() as f32).sqrt() < 0.006).collect();
     let first = quiet.iter().position(|q| !q).unwrap_or(quiet.len());
     let last = quiet.iter().rposition(|q| !q).map(|i| i + 1).unwrap_or(0);
     let mut out = Vec::with_capacity(pcm.len());
@@ -241,7 +245,8 @@ mod tests {
     #[test]
     fn long_pauses_are_capped_and_short_ones_kept() {
         let rate = 24000;
-        let tone = |ms: usize| (0..rate as usize * ms / 1000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect::<Vec<f32>>();
+        let tone =
+            |ms: usize| (0..rate as usize * ms / 1000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect::<Vec<f32>>();
         let gap = |ms: usize| vec![0.0f32; rate as usize * ms / 1000];
         let pcm: Vec<f32> = [gap(300), tone(500), gap(700), tone(500), gap(100), tone(500), gap(400)].concat();
         let out = tighten(&pcm, rate);

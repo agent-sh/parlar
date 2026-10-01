@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "parlar"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "parlar-moonshine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libloading 0.9.0",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "parlard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",

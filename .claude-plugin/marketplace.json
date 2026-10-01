@@ -1,11 +1,19 @@
 {
   "name": "parlar",
-  "owner": { "name": "Avi Fenesh" },
+  "owner": {
+    "name": "agent-sh",
+    "url": "https://github.com/agent-sh"
+  },
   "plugins": [
     {
       "name": "parlar",
       "source": "./plugin/claude",
-      "description": "Voice conversation mode: talk to this session and hear it talk back"
+      "description": "Voice conversation mode: talk to this session and hear it talk back",
+      "version": "0.1.1",
+      "category": "productivity"
     }
-  ]
+  ],
+  "metadata": {
+    "description": "Voice conversation mode for Claude Code and Codex."
+  }
 }
