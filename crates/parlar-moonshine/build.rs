@@ -27,6 +27,8 @@ fn main() {
         None => fetch(&profile_dir),
     };
     let lib = dir.join("lib");
+    // a moved or deleted checkout must not keep linking against the old location
+    println!("cargo:rerun-if-changed={}", lib.display());
     for name in LIBS {
         let src = lib.join(name);
         assert!(src.exists(), "{} is missing; set PARLAR_MOONSHINE_DIR to an unpacked moonshine-voice release", src.display());

@@ -22,10 +22,10 @@ pub struct Tdt {
 }
 
 fn session(path: &Path, threads: usize) -> Result<Session> {
-    Ok(Session::builder()?
+    Session::builder()?
         .with_intra_threads(threads)?
         .commit_from_file(path)
-        .with_context(|| format!("load {}", path.display()))?)
+        .with_context(|| format!("load {}", path.display()))
 }
 
 /// First file that exists among the names, so a model directory may ship int8 or fp32.
