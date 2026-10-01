@@ -435,6 +435,9 @@ impl Daemon {
             std::fs::remove_file(path)?;
         }
         let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+        // removed when serving ends, and only by the daemon that bound it: a second parlard that
+        // finds this one running must leave its socket alone
+        let _unlink = Unlink(path.to_path_buf());
         eprintln!("parlard listening on {}", path.display());
         let state = self.state.clone();
         tokio::spawn(async move {
@@ -914,6 +917,14 @@ impl State {
     }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()
+    }
+}
+
+struct Unlink(std::path::PathBuf);
+
+impl Drop for Unlink {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 

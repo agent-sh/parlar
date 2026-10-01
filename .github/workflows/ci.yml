@@ -31,3 +31,13 @@ jobs:
                    plugin/codex/hooks/hooks.json shell/gnome/parlar@avifenesh/metadata.json; do
             python3 -m json.tool "$f" > /dev/null
           done
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PipeWire and ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libasound2-dev pkg-config clang
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the declared rust-version
+        run: cargo check --locked --all-targets

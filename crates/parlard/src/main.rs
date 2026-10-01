@@ -291,7 +291,6 @@ async fn serve(cli: Cli) -> Result<()> {
         _ = tokio::signal::ctrl_c() => Ok(()),
         _ = term.recv() => Ok(()),
     };
-    let _ = std::fs::remove_file(&path);
     r
 }
 
