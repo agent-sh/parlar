@@ -35,7 +35,7 @@ pub fn utterances(items: &[Utterance]) -> String {
             out.push('\n');
         }
         let tag = match u.revises {
-            Some(prev) => format!("[voice u{} revises u{}]", u.id, prev),
+            Some(prev) => format!("[voice u{} continues u{}]", u.id, prev),
             None => format!("[voice u{}]", u.id),
         };
         out.push_str(&tag);

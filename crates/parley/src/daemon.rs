@@ -60,6 +60,8 @@ pub struct State {
     mic_gate: Arc<AtomicBool>,
     /// Words of the agent's line that the user talked over, for the next utterance.
     cut: Option<String>,
+    /// The last utterance delivered and when, so a quick follow-up is marked as its continuation.
+    last_heard: Option<(UtteranceId, u64, std::time::Instant)>,
     ui: broadcast::Sender<Ui>,
 }
 
@@ -80,6 +82,7 @@ impl State {
             barge: Arc::new(AtomicBool::new(false)),
             mic_gate: Arc::new(AtomicBool::new(false)),
             cut: None,
+            last_heard: None,
             ui,
         }
     }
@@ -123,9 +126,6 @@ impl State {
             remind: true,
             said: false,
         });
-        if self.focus.is_none() {
-            self.focus = Some(key);
-        }
         Some(self.sessions.len() - 1)
     }
 
@@ -218,10 +218,22 @@ impl State {
         self.next_utt += 1;
         let heard = heard.filter(|h| h.trim() != text.trim());
         let interrupted_after = self.cut.take();
-        let u = Utterance { id, text, heard, revises: None, interrupted_after };
         let Some(i) = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k)) else {
+            eprintln!("heard u{id} with no session in focus, dropped: {text}");
             return (id, None);
         };
+        let key = self.sessions[i].key;
+        let revises = self
+            .last_heard
+            .filter(|(_, k, at)| *k == key && at.elapsed() < CONTINUATION)
+            .map(|(prev, _, _)| prev);
+        self.last_heard = Some((id, key, std::time::Instant::now()));
+        let u = Utterance { id, text, heard, revises, interrupted_after };
+        eprintln!(
+            "heard u{id} -> {}: {}",
+            if self.sessions[i].cwd.is_empty() { "session" } else { self.sessions[i].cwd.as_str() },
+            u.text
+        );
         let _ = self.ui.send(Ui::Caption { who: "user".into(), text: u.text.clone() });
         let s = &mut self.sessions[i];
         s.pending.push(u);
@@ -246,6 +258,9 @@ fn remind(s: &mut Session, items: &mut [Utterance]) {
         }
     }
 }
+
+/// A follow-up this soon after a delivered utterance is marked as its continuation.
+const CONTINUATION: Duration = Duration::from_secs(5);
 
 pub type Shared = Arc<Mutex<State>>;
 
@@ -403,11 +418,9 @@ impl Daemon {
                     // SessionStart only carries the voice mode note while the conversation is on
                     s.remind = !self_active;
                 }
-                // focus follows where the person types (TurnStart); a new session only takes it
-                // when nobody has it, so starting one session does not steal voice from another
-                if st.focus.is_none() {
-                    st.focus = Some(st.sessions[i].key);
-                }
+                // focus moves only when the person moves it (/parley:talk, the indicator menu):
+                // agent sessions get prompts all the time, so following prompts sends speech to
+                // whichever agent happened to be busy
                 st.emit_phase();
                 Response::Attached { focused: st.focused(i), active: st.active }
             }
@@ -417,7 +430,7 @@ impl Daemon {
                     st.supersede(i);
                     let key = st.sessions.remove(i).key;
                     if st.focus == Some(key) {
-                        st.focus = st.sessions.last().map(|s| s.key);
+                        st.focus = None;
                     }
                     st.emit_phase();
                 }
@@ -445,9 +458,7 @@ impl Daemon {
                 let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
                     TurnEvent::TurnStart => {
-                        // a typed prompt: voice follows the person's attention, and the idle
-                        // waiter must not wake a busy session
-                        st.focus = Some(st.sessions[i].key);
+                        // a typed prompt: the idle waiter must not wake a busy session
                         st.supersede(i);
                         st.release_held();
                         st.sessions[i].in_turn = true;
@@ -624,7 +635,7 @@ impl State {
             self.supersede(i);
             let key = self.sessions.remove(i).key;
             if self.focus == Some(key) {
-                self.focus = self.sessions.last().map(|s| s.key);
+                self.focus = None;
             }
         }
     }
@@ -638,7 +649,7 @@ impl State {
             self.supersede(i);
             self.sessions.remove(i);
             if self.focus == Some(key) {
-                self.focus = self.sessions.last().map(|s| s.key);
+                self.focus = None;
             }
             self.emit_phase();
         }
@@ -708,7 +719,7 @@ mod tests {
         let mut lines = BufReader::new(rd).lines();
         let o = Origin { session: None, pids: vec![4242] };
         let r = send(&mut wr, &mut lines, &Request::Attach { origin: o, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
-        assert_eq!(r, Response::Attached { focused: true, active: false });
+        assert_eq!(r, Response::Attached { focused: false, active: false }, "attaching never takes focus");
         assert_eq!(d.state.lock().await.sessions.len(), 1);
         drop(wr);
         drop(lines);
@@ -725,12 +736,40 @@ mod tests {
         d.handle(on(true)).await;
         let o = Origin { session: Some("cx".into()), pids: vec![1] };
         d.handle(Request::Attach { origin: o.clone(), harness: Harness::Codex, cwd: String::new(), mcp: false }).await;
+        d.handle(Request::Set { active: None, mic_muted: None, voice_off: None, focus: Some("cx".into()), input: None, output: None }).await;
         let d2 = d.clone();
         let w = tokio::spawn(async move { d2.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         d.handle(on(false)).await;
         let r = tokio::time::timeout(Duration::from_secs(2), w).await.expect("released").unwrap();
         assert_eq!(r, Response::Utterances { items: vec![], superseded: true });
+    }
+
+    #[tokio::test]
+    async fn prompts_in_other_sessions_never_move_focus() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let set = |focus: Option<&str>, active| Request::Set { active, mic_muted: None, voice_off: None, focus: focus.map(str::to_string), input: None, output: None };
+        d.handle(set(None, Some(true))).await;
+        let me = Origin { session: Some("me".into()), pids: vec![] };
+        let agent = Origin { session: Some("agent".into()), pids: vec![] };
+        for o in [&me, &agent] {
+            d.handle(Request::Attach { origin: o.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
+        }
+        d.handle(set(Some("me"), None)).await;
+        d.handle(Request::Event { origin: agent.clone(), event: TurnEvent::TurnStart, tool: None }).await;
+        d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
+        d.handle(Request::Hear { text: "and more".into(), heard: None }).await;
+        match d.handle(Request::Claim { origin: me }).await {
+            Response::Utterances { items, .. } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[1].revises, Some(items[0].id), "a quick follow-up continues the first");
+            }
+            r => panic!("{r:?}"),
+        }
+        match d.handle(Request::Claim { origin: agent }).await {
+            Response::Utterances { items, .. } => assert!(items.is_empty()),
+            r => panic!("{r:?}"),
+        }
     }
 
     #[tokio::test]
@@ -750,6 +789,7 @@ mod tests {
         drop(lines);
         served.await.unwrap().unwrap();
         assert_eq!(d.state.lock().await.sessions.len(), 1);
+        d.handle(Request::Set { active: None, mic_muted: None, voice_off: None, focus: Some("s1".into()), input: None, output: None }).await;
         d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
         match d.handle(Request::Claim { origin: hook }).await {
             Response::Utterances { items, .. } => assert_eq!(items[0].text, "hello"),

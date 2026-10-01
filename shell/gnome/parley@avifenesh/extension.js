@@ -265,7 +265,18 @@ class Indicator {
             Main.notify('parley', 'parleyd is not running. Start it with: parley daemon');
             return;
         }
-        this._send({op: 'set', active: this._phase === 'stopped'});
+        const starting = this._phase === 'stopped';
+        if (!starting) {
+            this._send({op: 'set', active: false});
+            return;
+        }
+        request({op: 'state'}).then(st => {
+            if (!(st.sessions ?? []).some(x => x.focused)) {
+                Main.notify('parley', 'Pick a session first: run /parley:talk in it, or choose one under Talk to.');
+                return;
+            }
+            this._send({op: 'set', active: true});
+        }).catch(() => Main.notify('parley', 'parleyd is not running.'));
     }
 
     _setMuted(muted) {

@@ -271,7 +271,8 @@ impl Endpointer {
 
 const HOLD_TAIL: &[&str] = &[
     "and", "so", "but", "or", "because", "um", "uh", "like", "the", "a", "an", "to", "of", "with",
-    "then", "wait", "if", "that", "is", "maybe", "also",
+    "then", "wait", "if", "that", "is", "maybe", "also", "seems", "think", "want", "need", "it",
+    "this", "for", "in", "on", "my", "your", "we", "i", "you", "well", "okay", "ok", "hmm",
 ];
 
 /// Quiet time before the audio model is asked about the phrase.
@@ -282,8 +283,9 @@ const SCORE_AFTER: Duration = Duration::from_millis(200);
 /// trail off on a falling pitch. Otherwise a low end-of-turn score reads as a thinking pause.
 fn hold(text: &str, score: Option<f32>) -> Duration {
     let t = text.trim_end();
-    if t.ends_with('?') {
-        return Duration::from_millis(250);
+    let words = t.split_whitespace().count();
+    if t.ends_with('?') && words > 2 {
+        return Duration::from_millis(500);
     }
     let last = t
         .rsplit(|c: char| c.is_whitespace())
@@ -292,13 +294,15 @@ fn hold(text: &str, score: Option<f32>) -> Duration {
         .trim_matches(|c: char| !c.is_alphanumeric())
         .to_lowercase();
     if t.ends_with(',') || t.ends_with("...") || HOLD_TAIL.contains(&last.as_str()) || last == "think" {
-        return Duration::from_millis(1600);
+        return Duration::from_millis(3000);
+    }
+    // one or two words is usually the start of a thought, not the whole of it
+    if words <= 2 {
+        return Duration::from_millis(2000);
     }
     match score {
-        Some(p) if p < 0.5 => Duration::from_millis(1800),
-        // not scored yet: wait for the model unless it is unavailable, in which case the tick
-        // after SCORE_AFTER keeps returning None and the word rule alone applies
-        _ => Duration::from_millis(450),
+        Some(p) if p < 0.5 => Duration::from_millis(2500),
+        _ => Duration::from_millis(900),
     }
 }
 
@@ -369,7 +373,9 @@ mod tests {
     #[test]
     fn trailing_conjunction_holds_longer() {
         assert!(hold("open the router and", None) > hold("open the router", None));
-        assert!(hold("is it done?", None) < hold("open the router", None));
+        assert!(hold("is it done yet?", None) < hold("open the router", None));
+        assert!(hold("so", None) >= Duration::from_secs(2));
+        assert!(hold("seems that", None) >= Duration::from_secs(2));
         assert!(hold("let me think", None) > hold("open the router", None));
         // the audio model can extend a pause but never cut a trailing conjunction short
         assert!(hold("open the router", Some(0.2)) > hold("open the router", Some(0.9)));
@@ -384,7 +390,9 @@ mod tests {
         assert!(ev.iter().all(|e| !matches!(e, Heard::Turn { .. })));
         let ev = ep.update(&[line("open the router file", true)], t0 + Duration::from_millis(300), false, "");
         assert!(ev.iter().all(|e| !matches!(e, Heard::Turn { .. })));
-        let ev = ep.tick(t0 + Duration::from_millis(900));
+        // not yet: a complete phrase still waits its hold
+        assert!(ep.tick(t0 + Duration::from_millis(900)).is_empty());
+        let ev = ep.tick(t0 + Duration::from_millis(1300));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Open the router file"));
     }
 
@@ -407,7 +415,7 @@ mod tests {
             false,
             "",
         );
-        let ev = ep.tick(t0 + Duration::from_millis(2000));
+        let ev = ep.tick(t0 + Duration::from_millis(2400));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Open the router config and the tests"));
     }
 
@@ -434,9 +442,10 @@ mod release_tests {
         let mut ep = Endpointer::default();
         let t0 = Instant::now();
         ep.update(&[l("first thing", true)], t0, false, "");
-        assert_eq!(ep.tick(t0 + Duration::from_secs(1)).len(), 1);
-        ep.update(&[l("first thing", true), l("second thing", true)], t0 + Duration::from_secs(2), false, "");
-        let ev = ep.tick(t0 + Duration::from_secs(3));
+        assert!(ep.tick(t0 + Duration::from_secs(1)).is_empty(), "two words wait longer");
+        assert_eq!(ep.tick(t0 + Duration::from_secs(3)).len(), 1);
+        ep.update(&[l("first thing", true), l("second thing", true)], t0 + Duration::from_secs(4), false, "");
+        let ev = ep.tick(t0 + Duration::from_secs(7));
         assert!(matches!(&ev[..], [Heard::Turn { text, .. }] if text == "Second thing"));
     }
 }
