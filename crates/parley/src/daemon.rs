@@ -260,6 +260,17 @@ impl Daemon {
     }
 
     async fn conn(self: Arc<Self>, stream: UnixStream) -> Result<()> {
+        let mut mcp_key = None;
+        let r = self.lines(stream, &mut mcp_key).await;
+        if let Some(key) = mcp_key {
+            self.state.lock().await.mcp_gone(key);
+        }
+        r
+    }
+
+    /// Serve requests on one connection. An MCP server keeps its connection for its whole life,
+    /// so the session it attached is recorded in `mcp_key` and released when the line ends.
+    async fn lines(self: &Arc<Self>, stream: UnixStream, mcp_key: &mut Option<u64>) -> Result<()> {
         let (rd, mut wr) = stream.into_split();
         let mut lines = BufReader::new(rd).lines();
         while let Some(line) = lines.next_line().await? {
@@ -276,7 +287,15 @@ impl Daemon {
             if matches!(req, Request::Subscribe) {
                 return self.subscribe(wr).await;
             }
+            let mcp_origin = match &req {
+                Request::Attach { origin, mcp: true, .. } => Some(origin.clone()),
+                _ => None,
+            };
             let resp = self.handle(req).await;
+            if let Some(o) = mcp_origin {
+                let st = self.state.lock().await;
+                *mcp_key = st.find(&o).map(|i| st.sessions[i].key);
+            }
             write(&mut wr, &resp).await?;
         }
         Ok(())
@@ -532,6 +551,21 @@ async fn write<T: serde::Serialize>(wr: &mut tokio::net::unix::OwnedWriteHalf, v
 }
 
 impl State {
+    /// The MCP server of a session went away. A session known only through its MCP server is
+    /// dropped; one with hooks keeps living without the MCP link.
+    fn mcp_gone(&mut self, key: u64) {
+        let Some(i) = self.sessions.iter().position(|s| s.key == key) else { return };
+        self.sessions[i].mcp_parent = None;
+        if self.sessions[i].session.is_none() {
+            self.supersede(i);
+            self.sessions.remove(i);
+            if self.focus == Some(key) {
+                self.focus = self.sessions.last().map(|s| s.key);
+            }
+            self.emit_phase();
+        }
+    }
+
     pub fn set_speaking(&mut self, on: bool) {
         self.speaking = on;
         self.emit_phase();
@@ -565,5 +599,61 @@ impl State {
     }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voice::{Engine, Queue};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>, req: &Request) -> Response {
+        let mut v = serde_json::to_vec(req).unwrap();
+        v.push(b'\n');
+        w.write_all(&v).await.unwrap();
+        serde_json::from_str(&r.next_line().await.unwrap().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mcp_only_session_is_released_with_its_connection() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let (a, b) = UnixStream::pair().unwrap();
+        let served = tokio::spawn(d.clone().conn(b));
+        let (rd, mut wr) = a.into_split();
+        let mut lines = BufReader::new(rd).lines();
+        let o = Origin { session: None, pids: vec![4242] };
+        let r = send(&mut wr, &mut lines, &Request::Attach { origin: o, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
+        assert_eq!(r, Response::Attached { focused: true, active: true });
+        assert_eq!(d.state.lock().await.sessions.len(), 1);
+        drop(wr);
+        drop(lines);
+        served.await.unwrap().unwrap();
+        let st = d.state.lock().await;
+        assert!(st.sessions.is_empty());
+        assert_eq!(st.focus, None);
+    }
+
+    #[tokio::test]
+    async fn hook_session_survives_its_mcp_and_gets_utterances() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let hook = Origin { session: Some("s1".into()), pids: vec![10, 4242, 7] };
+        d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false }).await;
+        let (a, b) = UnixStream::pair().unwrap();
+        let served = tokio::spawn(d.clone().conn(b));
+        let (rd, mut wr) = a.into_split();
+        let mut lines = BufReader::new(rd).lines();
+        let mcp = Origin { session: None, pids: vec![4242] };
+        send(&mut wr, &mut lines, &Request::Attach { origin: mcp, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
+        assert_eq!(d.state.lock().await.sessions.len(), 1, "MCP merged into the hook session");
+        drop(wr);
+        drop(lines);
+        served.await.unwrap().unwrap();
+        assert_eq!(d.state.lock().await.sessions.len(), 1);
+        d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
+        match d.handle(Request::Claim { origin: hook }).await {
+            Response::Utterances { items, .. } => assert_eq!(items[0].text, "hello"),
+            r => panic!("{r:?}"),
+        }
     }
 }
