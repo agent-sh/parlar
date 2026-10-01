@@ -47,9 +47,9 @@ struct Session {
     blocked_at: Option<std::time::Instant>,
     /// Conversation lines not yet printed in this session's terminal.
     transcript: Vec<String>,
-    /// The tool call in flight: what it does and when it started.
-    running: Option<(Option<String>, std::time::Instant)>,
-    /// The user was already told that this tool call holds their words.
+    /// The main thread's tool calls in flight, oldest first.
+    running: Vec<Call>,
+    /// The user was already told that the calls in flight hold their words.
     acked: bool,
 }
 
@@ -70,7 +70,7 @@ impl Session {
             said: false,
             blocked_at: None,
             transcript: Vec::new(),
-            running: None,
+            running: Vec::new(),
             acked: false,
         }
     }
@@ -253,7 +253,7 @@ impl State {
             s.pending = items;
             s.pending.extend(rest);
             s.in_turn = false;
-            s.running = None;
+            s.running.clear();
         }
     }
 
@@ -341,7 +341,7 @@ impl State {
             if let Err(WaitResult::Items(back)) = w.tx.send(WaitResult::Items(items)) {
                 s.pending = back;
                 s.in_turn = false;
-                s.running = None;
+                s.running.clear();
             }
         }
         let to = s.session.clone().or_else(|| Some(format!("mcp:{}", s.mcp_parent.unwrap_or(0))));
@@ -611,12 +611,14 @@ impl Daemon {
                 if !s.pending.iter().any(|u| format::is_stop(&u.text)) {
                     return empty();
                 }
+                // the hook denies this call, so it never runs and never ends
+                s.running.clear();
                 // a stop takes everything said so far with it, so the reason reads in order
                 Response::Utterances { items: st.take(i), superseded: false }
             }
             Request::Wait { origin, timeout_ms, holds_turn } => self.wait(origin, timeout_ms, holds_turn).await,
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
-            Request::Event { origin, event, tool, detail } => {
+            Request::Event { origin, event, tool, detail, call } => {
                 let mut st = self.state.lock().await;
                 let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
@@ -626,16 +628,24 @@ impl Daemon {
                         st.release_held();
                         st.sessions[i].in_turn = true;
                         st.sessions[i].said = true;
+                        // a call cut off with Escape never ends; a new prompt means none runs
+                        st.sessions[i].running.clear();
                     }
                     TurnEvent::ToolStart => {
                         let s = &mut st.sessions[i];
                         s.in_turn = true;
-                        s.running = Some((detail, std::time::Instant::now()));
-                        s.acked = false;
+                        if let Some(id) = call {
+                            if s.running.is_empty() {
+                                s.acked = false;
+                            }
+                            s.running.push(Call { id, detail, since: std::time::Instant::now() });
+                        }
                     }
                     TurnEvent::ToolEnd | TurnEvent::ToolError => {
                         st.sessions[i].in_turn = true;
-                        st.sessions[i].running = None;
+                        if let Some(id) = call {
+                            st.sessions[i].running.retain(|c| c.id != id);
+                        }
                         if st.focused(i) {
                             let _ = st.ui.send(Ui::Tool { ok: event == TurnEvent::ToolEnd, name: tool });
                         }
@@ -648,7 +658,7 @@ impl Daemon {
                 let (opening, voice_off) = {
                     let mut st = self.state.lock().await;
                     let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
-                    st.sessions[i].running = None;
+                    st.sessions[i].running.clear();
                     let quiet = !st.sessions[i].said && st.active && st.focused(i);
                     st.sessions[i].said = true;
                     let opening = quiet.then_some(()).and(last_message).map(|m| format::opening(&m));
@@ -784,7 +794,7 @@ impl Daemon {
                 return Response::Utterances { items: vec![], superseded: true };
             }
             st.sessions[i].in_turn = false;
-            st.sessions[i].running = None;
+            st.sessions[i].running.clear();
             st.emit_phase();
             if !st.sessions[i].pending.is_empty() {
                 st.sessions[i].in_turn = true;
@@ -938,7 +948,7 @@ impl State {
     pub fn busy_ack(&mut self, text: &str) -> Option<String> {
         let i = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k))?;
         let s = &mut self.sessions[i];
-        let (detail, since) = s.running.as_ref()?;
+        let Call { detail, since, .. } = s.running.first()?;
         if s.acked || since.elapsed() < LONG_STEP {
             return None;
         }
@@ -960,6 +970,13 @@ impl State {
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()
     }
+}
+
+/// A main-thread tool call in flight.
+struct Call {
+    id: String,
+    detail: Option<String>,
+    since: std::time::Instant,
 }
 
 /// A tool call running longer than this holds the user's words long enough to say so.
@@ -1076,7 +1093,14 @@ mod tests {
                 .await;
         }
         d.handle(set(Some("me"), None)).await;
-        d.handle(Request::Event { origin: agent.clone(), event: TurnEvent::TurnStart, tool: None, detail: None }).await;
+        d.handle(Request::Event {
+            origin: agent.clone(),
+            event: TurnEvent::TurnStart,
+            tool: None,
+            detail: None,
+            call: None,
+        })
+        .await;
         d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
         d.handle(Request::Hear { text: "and more".into(), heard: None }).await;
         match d.handle(Request::Claim { origin: me, at_stop: false }).await {
@@ -1236,28 +1260,67 @@ mod tests {
     async fn speech_during_a_long_tool_call_is_acknowledged_once() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let o = talking_to(&d, "busy", 900).await;
-        let start = |detail: &str| Request::Event {
+        let start = |detail: &str, call: &str| Request::Event {
             origin: o.clone(),
             event: TurnEvent::ToolStart,
             tool: Some("Bash".into()),
             detail: Some(detail.into()),
+            call: Some(call.into()),
         };
-        d.handle(start("Watch CI on the PR")).await;
+        let end = |call: &str| Request::Event {
+            origin: o.clone(),
+            event: TurnEvent::ToolEnd,
+            tool: None,
+            detail: None,
+            call: Some(call.into()),
+        };
+        d.handle(start("Watch CI on the PR", "t1")).await;
+        d.handle(start("Read a file", "t2")).await;
+        // a subagent's call carries no id and changes nothing
+        d.handle(Request::Event {
+            origin: o.clone(),
+            event: TurnEvent::ToolStart,
+            tool: None,
+            detail: None,
+            call: None,
+        })
+        .await;
         let mut st = d.state.lock().await;
         // a fresh call is not long yet
         assert_eq!(st.busy_ack("also run clippy"), None);
         let back = std::time::Instant::now().checked_sub(LONG_STEP * 2).unwrap();
-        for s in st.sessions.iter_mut() {
-            if let Some(r) = s.running.as_mut() {
-                r.1 = back;
-            }
+        for c in st.sessions.iter_mut().flat_map(|s| s.running.iter_mut()) {
+            c.since = back;
         }
         let ack = st.busy_ack("also run clippy").expect("acknowledged");
         assert!(ack.contains("CI") && ack.contains("pass that on"), "{ack}");
         assert_eq!(st.busy_ack("and the docs"), None, "once per tool call");
         drop(st);
-        d.handle(Request::Event { origin: o.clone(), event: TurnEvent::ToolEnd, tool: None, detail: None }).await;
-        assert_eq!(d.state.lock().await.busy_ack("hello"), None, "nothing runs now");
+        // the parallel call ending does not end the long one
+        d.handle(end("t2")).await;
+        assert_eq!(d.state.lock().await.sessions[0].running.len(), 1);
+        d.handle(end("t1")).await;
+        assert!(d.state.lock().await.sessions[0].running.is_empty(), "nothing runs now");
+    }
+
+    #[tokio::test]
+    async fn a_denied_call_does_not_stay_running() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let o = talking_to(&d, "deny", 910).await;
+        d.handle(Request::Event {
+            origin: o.clone(),
+            event: TurnEvent::ToolStart,
+            tool: None,
+            detail: None,
+            call: Some("t1".into()),
+        })
+        .await;
+        d.handle(Request::Hear { text: "stop".into(), heard: None }).await;
+        match d.handle(Request::ClaimStop { origin: o }).await {
+            Response::Utterances { items, .. } => assert_eq!(items.len(), 1),
+            r => panic!("{r:?}"),
+        }
+        assert!(d.state.lock().await.sessions[0].running.is_empty());
     }
 
     #[test]

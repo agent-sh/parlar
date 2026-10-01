@@ -123,6 +123,10 @@ pub enum Request {
         /// What a starting tool call is doing, in the agent's words (a shell command's description).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+        /// The main thread's tool call id, pairing a start with its end. None for a subagent's
+        /// calls, which are not tracked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<String>,
     },
     /// The agent's turn ended. When it said nothing through `say` during the turn, the opening
     /// of its final message is spoken instead, so weaker models still answer out loud.

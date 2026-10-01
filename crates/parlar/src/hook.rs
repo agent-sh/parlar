@@ -72,12 +72,15 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             // attach again: a session that started before parlard gets its folder and harness
             let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or_default().to_string();
             c.call(&Request::Attach { origin: o.clone(), harness, cwd, mcp: false }, quick)?;
-            c.call(&Request::Event { origin: o, event: TurnEvent::TurnStart, tool: None, detail: None }, quick)?;
+            c.call(
+                &Request::Event { origin: o, event: TurnEvent::TurnStart, tool: None, detail: None, call: None },
+                quick,
+            )?;
         }
         Event::PreTool => {
             let tool = tool_name(&input);
-            let detail = tool_detail(&input);
-            c.call(&Request::Event { origin: o.clone(), event: TurnEvent::ToolStart, tool, detail }, quick)?;
+            let (detail, call) = if subagent { (None, None) } else { (tool_detail(&input), Some(call_id(&input))) };
+            c.call(&Request::Event { origin: o.clone(), event: TurnEvent::ToolStart, tool, detail, call }, quick)?;
             if subagent {
                 return Ok(0);
             }
@@ -99,7 +102,11 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
         Event::PostTool | Event::PostToolFailure => {
             let failed = event == Event::PostToolFailure || tool_failed(&input);
             let ev = if failed { TurnEvent::ToolError } else { TurnEvent::ToolEnd };
-            c.call(&Request::Event { origin: o.clone(), event: ev, tool: tool_name(&input), detail: None }, quick)?;
+            let call = (!subagent).then(|| call_id(&input));
+            c.call(
+                &Request::Event { origin: o.clone(), event: ev, tool: tool_name(&input), detail: None, call },
+                quick,
+            )?;
             if subagent {
                 return Ok(0);
             }
@@ -220,6 +227,12 @@ fn tool_name(input: &Value) -> Option<String> {
 fn tool_detail(input: &Value) -> Option<String> {
     let args = input.get("tool_input")?;
     ["description", "justification"].iter().find_map(|k| args.get(*k).and_then(Value::as_str)).map(str::to_string)
+}
+
+/// Pairs a tool call's start with its end. A harness without ids gets one shared id, so any end
+/// closes every open call.
+fn call_id(input: &Value) -> String {
+    input.get("tool_use_id").and_then(Value::as_str).unwrap_or("main").to_string()
 }
 
 fn tool_failed(input: &Value) -> bool {
