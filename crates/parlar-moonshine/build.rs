@@ -38,19 +38,25 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PARLAR_MOONSHINE_DIR");
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let target = match (os.as_str(), arch.as_str()) {
-        ("windows", "x86_64") => WINDOWS_X64,
-        ("macos", "aarch64") => MACOS_ARM64,
-        ("linux", _) => return,
-        _ => panic!("no prebuilt libmoonshine for {os}/{arch}; set PARLAR_MOONSHINE_DIR"),
-    };
+    if os == "linux" {
+        return;
+    }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out
     let profile_dir = out.ancestors().nth(3).expect("OUT_DIR layout").to_path_buf();
     let cache = profile_dir.parent().unwrap().join("moonshine").join(VERSION);
-    let dir = match std::env::var_os("PARLAR_MOONSHINE_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => fetch_moonshine(&cache, &target),
+    // a prebuilt release for the target, or the user's own unpacked one
+    let known = match (os.as_str(), arch.as_str()) {
+        ("windows", "x86_64") => Some(WINDOWS_X64),
+        ("macos", "aarch64") => Some(MACOS_ARM64),
+        _ => None,
+    };
+    let dir = match (std::env::var_os("PARLAR_MOONSHINE_DIR"), &known) {
+        (Some(d), _) => PathBuf::from(d),
+        (None, Some(t)) => fetch_moonshine(&cache, t),
+        (None, None) => panic!(
+            "no prebuilt libmoonshine for {os}/{arch}; unpack a moonshine-voice release and set PARLAR_MOONSHINE_DIR"
+        ),
     };
     let lib = dir.join("lib");
     println!("cargo:rustc-link-search=native={}", lib.display());
@@ -63,20 +69,41 @@ fn main() {
         println!("cargo:rustc-link-lib=delayimp");
         let _ = std::fs::copy(lib.join("onnxruntime.dll"), profile_dir.join("onnxruntime.dll"));
     } else {
-        let ort_dir = fetch_ort(&cache, &target);
         println!("cargo:rustc-link-lib=static=moonshine");
         println!("cargo:rustc-link-lib=c++");
         for fw in ["Foundation", "Accelerate"] {
             println!("cargo:rustc-link-lib=framework={fw}");
         }
-        println!("cargo:rustc-link-search=native={}", ort_dir.display());
-        println!("cargo:rustc-link-lib=dylib=onnxruntime");
-        // next to the binary, then the data folder parlard fetch fills
+        // libmoonshine's objects use clang's availability checks (___isPlatformVersionAtLeast),
+        // which live in clang's compiler runtime, not in Rust's
+        if let Some(rt) = clang_rt() {
+            println!("cargo:rustc-link-search=native={}", rt.parent().unwrap().display());
+            println!("cargo:rustc-link-lib=static=clang_rt.osx");
+        }
+        // ONNX Runtime is weakly linked and opened by parlard from its lib folder before the
+        // first call (see models::moonshine), so a binary installed anywhere starts without it
+        if let Some(t) = &known {
+            let ort_dir = fetch_ort(&cache, t);
+            println!("cargo:rustc-link-search=native={}", ort_dir.display());
+            let _ = std::fs::copy(
+                ort_dir.join("libonnxruntime.1.23.0.dylib"),
+                profile_dir.join("libonnxruntime.1.23.0.dylib"),
+            );
+        } else {
+            println!("cargo:rustc-link-search=native={}", lib.display());
+        }
+        println!("cargo:rustc-link-arg=-Wl,-weak-lonnxruntime");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../lib/parlar");
-        let _ =
-            std::fs::copy(ort_dir.join("libonnxruntime.1.23.0.dylib"), profile_dir.join("libonnxruntime.1.23.0.dylib"));
     }
+}
+
+/// clang's compiler runtime for macOS, from the toolchain `cc` resolves to.
+fn clang_rt() -> Option<PathBuf> {
+    let out = Command::new("cc").args(["-print-resource-dir"]).output().ok()?;
+    let dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let lib = dir.join("lib/darwin/libclang_rt.osx.a");
+    lib.exists().then_some(lib)
 }
 
 fn fetch_moonshine(cache: &Path, t: &Target) -> PathBuf {

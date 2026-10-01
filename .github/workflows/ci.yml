@@ -143,6 +143,11 @@ jobs:
       - name: parlard answers on its socket, hooks see their harness
         timeout-minutes: 3
         run: |
+          # an installed binary must start with no dylib beside it (it is weakly linked and
+          # opened from the lib folder by parlard fetch), like cargo install leaves it
+          mkdir -p "$RUNNER_TEMP/bin" && cp target/release/parlar target/release/parlard "$RUNNER_TEMP/bin/"
+          "$RUNNER_TEMP/bin/parlard" --version
+          "$RUNNER_TEMP/bin/parlard" config
           target/release/parlard --no-mic --silent 2> parlard.log &
           sleep 3
           target/release/parlar ctl state

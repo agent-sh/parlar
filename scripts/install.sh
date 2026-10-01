@@ -30,6 +30,8 @@ T=$ROOT/target/release
 
 install -d "$BIN"
 install -m 755 "$T/parlar" "$T/parlard" "$BIN/"
+# macOS: libmoonshine is linked in and ONNX Runtime sits next to the binaries (or fetch installs it)
+[ -f "$T/libonnxruntime.1.23.0.dylib" ] && install -m 644 "$T/libonnxruntime.1.23.0.dylib" "$BIN/"
 
 # plugins: a local marketplace per harness. Harnesses copy a plugin into their own cache and drop
 # symlinks on the way, so bin/parlar is a real copy.

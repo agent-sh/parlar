@@ -146,7 +146,37 @@ pub fn moonshine() -> Result<()> {
     }
     #[cfg(windows)]
     dll_directory(&lib_dir())?;
+    #[cfg(target_os = "macos")]
+    load_ort(&lib)?;
     parlar_moonshine::open(&lib)
+}
+
+/// ONNX Runtime is weakly linked on macOS (see parlar-moonshine's build script): open it from
+/// the lib folder before the first call, so its symbols are bound wherever the file lives.
+#[cfg(target_os = "macos")]
+fn load_ort(lib: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn dlopen(path: *const core::ffi::c_char, flags: i32) -> *mut core::ffi::c_void;
+        fn dlerror() -> *const core::ffi::c_char;
+    }
+    const RTLD_NOW: i32 = 2;
+    const RTLD_GLOBAL: i32 = 8;
+    let c = std::ffi::CString::new(lib.as_os_str().as_bytes())?;
+    // SAFETY: a NUL-terminated path; the handle is kept for the life of the process
+    let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+    if h.is_null() {
+        // SAFETY: dlerror returns a static string or null
+        let msg = unsafe { dlerror() };
+        let msg = if msg.is_null() {
+            String::new()
+        } else {
+            // SAFETY: non-null, NUL-terminated
+            unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy().into_owned()
+        };
+        bail!("load {}: {msg}", lib.display());
+    }
+    Ok(())
 }
 
 /// onnxruntime.dll is delay-loaded (see parlar-moonshine's build script): point the loader at the
