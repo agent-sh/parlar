@@ -1,3 +1,4 @@
+mod aec;
 mod audio;
 mod listen;
 mod models;
@@ -38,6 +39,9 @@ struct Cli {
     /// Decode only finished phrases: about half the recognizer cost, slower final text.
     #[arg(long)]
     no_partials: bool,
+    /// Turn off echo cancellation (use with headphones, or to compare).
+    #[arg(long)]
+    no_aec: bool,
     /// Comma-separated words to bias recognition toward.
     #[arg(long)]
     keyterms: Option<String>,
@@ -176,8 +180,13 @@ async fn serve(cli: Cli) -> Result<()> {
                 None
             }
         };
+        let aec = match &kokoro {
+            Some((_, p)) if !cli.no_aec && cli.input_wav.is_empty() => Some(aec::Aec::new(p.far.clone())),
+            _ => None,
+        };
         let cfg = listen::Config {
             every_ms: 250,
+            aec,
             turn,
             partials: !cli.no_partials,
             keyterms: cli.keyterms.clone(),

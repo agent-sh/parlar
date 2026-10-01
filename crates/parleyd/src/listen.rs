@@ -25,6 +25,8 @@ pub enum Heard {
 
 pub struct Config {
     pub every_ms: usize,
+    /// Echo canceller fed by the speaker; without it only the text echo guard applies.
+    pub aec: Option<crate::aec::Aec>,
     /// End-of-turn audio model; without it the word rule alone decides.
     pub turn: Option<crate::turn::SmartTurn>,
     pub partials: bool,
@@ -74,6 +76,10 @@ fn run(
     loop {
         match frames.rx.recv_timeout(Duration::from_millis(30)) {
             Ok(f) => {
+                let f = match cfg.aec.as_mut() {
+                    Some(a) => a.process(&f),
+                    None => f,
+                };
                 peak = peak.max(audio::rms(&f));
                 buf.extend_from_slice(&f);
                 recent.push(&f);

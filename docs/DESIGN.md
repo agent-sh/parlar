@@ -135,6 +135,7 @@ Measured on this rig (Core Ultra 9 275HX), CPU only:
 - Moonshine Small streaming: 0.6 of real time with partials (2 or 4 cores alike), 0.31 without;
   final text 300 ms after the end with partials, 0.7 to 1.25 s without. Partials are the default.
 - Smart Turn: 37 to 50 ms per decision on 1 thread; features match Hugging Face to 2e-5.
+- parleyd while the user is silent: 0.7% of one core; about 400 MB resident with all models.
 
 ## 5. Endpointing: thinking pause vs. done
 
@@ -221,8 +222,9 @@ Claude Code statusLine (`refreshInterval: 1`).
 - O3: asyncRewake timeout ceiling. The waiter must outlive long idle periods, or re-arm.
 - O4: Esc while a synchronous Stop hook blocks (Codex path).
 - O5: Hebrew. Moonshine v2 has no Hebrew; a second STT engine would be needed.
-- O6: echo cancellation (sonora AEC3) for speakers. Until then an echo guard drops recognized
-  text that matches what the agent is saying; headphones are the reliable setup.
+- O6: echo cancellation is in (sonora AEC3, fed with what the speaker actually played, 47.8 dB
+  on a synthetic linear echo path). Not yet measured in a real room on laptop speakers; the text
+  echo guard stays as a second line.
 - O7: Codex fresh-session wake: Codex has no asyncRewake, so a new Codex session hears voice only
   after its first turn. While its blocking Stop hook waits, typed input queues as a steer; Esc
   ends the wait.

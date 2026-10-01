@@ -258,11 +258,18 @@ pub struct Player {
     buf: Mutex<VecDeque<f32>>,
     level: AtomicU32,
     running: Mutex<Option<Running>>,
+    /// What actually reached the speaker, at 16 kHz, for echo cancellation.
+    pub far: crate::aec::Far,
 }
 
 impl Player {
     pub fn new() -> Arc<Player> {
-        Arc::new(Player { buf: Mutex::new(VecDeque::new()), level: AtomicU32::new(0), running: Mutex::new(None) })
+        Arc::new(Player {
+            buf: Mutex::new(VecDeque::new()),
+            level: AtomicU32::new(0),
+            running: Mutex::new(None),
+            far: crate::aec::Far::default(),
+        })
     }
     pub fn push(&self, pcm: &[f32], from_rate: u32) {
         let out = resample(pcm, from_rate, VOICE_RATE);
@@ -314,9 +321,12 @@ fn output<T: SizedSample + Send + 'static>(
     conv: fn(f32) -> T,
 ) -> Result<cpal::Stream> {
     let mut rs = Resampler::new(VOICE_RATE, rate);
+    let mut to_far = Resampler::new(rate, crate::aec::RATE);
     let mut ready: VecDeque<f32> = VecDeque::new();
     let mut src = Vec::new();
     let mut dst = Vec::new();
+    let mut played = Vec::new();
+    let mut far = Vec::new();
     Ok(dev.build_output_stream(
         cfg,
         move |out: &mut [T], _: &_| {
@@ -334,15 +344,20 @@ fn output<T: SizedSample + Send + 'static>(
             rs.process(&src, &mut dst);
             ready.extend(dst.iter().copied());
             let mut sq = 0f32;
+            played.clear();
             for f in out.chunks_mut(ch) {
                 let v = ready.pop_front().unwrap_or(0.0);
                 sq += v * v;
+                played.push(v);
                 for s in f {
                     *s = conv(v);
                 }
             }
             let rms = (sq / frames.max(1) as f32).sqrt();
             p.level.store((rms * 4.0).min(1.0).to_bits(), Ordering::Relaxed);
+            far.clear();
+            to_far.process(&played, &mut far);
+            p.far.push(&far);
         },
         |e| eprintln!("speaker stream: {e}"),
         None,
