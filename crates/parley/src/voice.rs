@@ -47,7 +47,11 @@ impl Queue {
                 if stale {
                     continue;
                 }
-                engine.play(&line).await;
+                if engine.play(&line).await {
+                    // the user talked over this line: what was queued behind it is stale
+                    backlog.clear();
+                    while rx.try_recv().is_ok() {}
+                }
             }
         });
         Queue { tx }
@@ -60,22 +64,41 @@ impl Voice for Queue {
     }
 }
 
+/// A built-in speech engine. `speak` runs on a blocking thread and returns the words that were
+/// cut off when `cancel` was raised mid-line (barge-in), or None when the line finished.
+pub trait Speaker: Send + Sync {
+    fn speak(&self, text: &str, cancel: &std::sync::atomic::AtomicBool) -> Option<String>;
+    /// Current output level, 0..1, for indicators.
+    fn level(&self) -> f32 {
+        0.0
+    }
+}
+
 pub enum Engine {
     /// No audio. Holds the speaking phase for roughly the time the line would take.
     Silent,
     /// Pipe each line to a program that speaks stdin, e.g. `espeak-ng` or `piper`.
     Command(Vec<String>),
+    Speaker(std::sync::Arc<dyn Speaker>),
 }
 
 impl Engine {
-    async fn play(&self, line: &Line) {
+    /// Returns true when the user cut the line off.
+    async fn play(&self, line: &Line) -> bool {
         eprintln!("say: {}", line.text);
         line.state.lock().await.set_speaking(true);
-        let ui = line.state.lock().await.ui();
+        let (ui, cancel) = {
+            let st = line.state.lock().await;
+            (st.ui(), st.barge())
+        };
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut was_cut = false;
+        // engines without a level meter get an envelope stand-in; built-in speakers are metered
+        // by the daemon's level task
+        let metered = matches!(self, Engine::Speaker(_));
         let pulse = tokio::spawn(async move {
-            // envelope stand-in until the TTS engine reports real output levels
             let mut t = 0f32;
-            loop {
+            while !metered {
                 t += 0.033;
                 let v = ((t * 4.8 * std::f32::consts::TAU).sin().abs() * 0.8).min(1.0);
                 let _ = ui.send(Ui::Levels { user: 0.0, agent: v });
@@ -92,9 +115,18 @@ impl Engine {
                     eprintln!("voice command failed: {e:#}");
                 }
             }
+            Engine::Speaker(s) => {
+                let (s, text, c) = (s.clone(), line.text.clone(), cancel.clone());
+                let cut = tokio::task::spawn_blocking(move || s.speak(&text, &c)).await.ok().flatten();
+                if let Some(cut) = cut {
+                    was_cut = true;
+                    line.state.lock().await.set_cut(cut);
+                }
+            }
         }
         pulse.abort();
         line.state.lock().await.set_speaking(false);
+        was_cut
     }
 }
 

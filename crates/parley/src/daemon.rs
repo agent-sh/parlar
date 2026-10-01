@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -49,6 +50,13 @@ pub struct State {
     mic_muted: bool,
     voice_off: bool,
     speaking: bool,
+    listening: bool,
+    /// Raised to cut the agent off mid-line (barge-in); the speaker polls it.
+    barge: Arc<AtomicBool>,
+    /// Mirrors "mic on" for the capture thread: active and not muted.
+    mic_gate: Arc<AtomicBool>,
+    /// Words of the agent's line that the user talked over, for the next utterance.
+    cut: Option<String>,
     ui: broadcast::Sender<Ui>,
 }
 
@@ -64,6 +72,10 @@ impl State {
             mic_muted: false,
             voice_off: false,
             speaking: false,
+            listening: false,
+            barge: Arc::new(AtomicBool::new(false)),
+            mic_gate: Arc::new(AtomicBool::new(true)),
+            cut: None,
             ui,
         }
     }
@@ -85,6 +97,33 @@ impl State {
             .position(|s| s.mcp_parent == Some(parent) || s.hook_pids.contains(&parent))
     }
 
+    /// Find the session, attaching it on the fly when a hook from a session that started before
+    /// parleyd shows up. MCP-only origins are never created here.
+    fn find_or_attach(&mut self, o: &Origin) -> Option<usize> {
+        if let Some(i) = self.find(o) {
+            return Some(i);
+        }
+        o.session.as_ref()?;
+        let key = self.next_key;
+        self.next_key += 1;
+        self.sessions.push(Session {
+            key,
+            session: o.session.clone(),
+            harness: Harness::Other,
+            cwd: String::new(),
+            mcp_parent: None,
+            hook_pids: o.pids.clone(),
+            pending: Vec::new(),
+            waiter: None,
+            in_turn: false,
+            remind: true,
+        });
+        if self.focus.is_none() {
+            self.focus = Some(key);
+        }
+        Some(self.sessions.len() - 1)
+    }
+
     fn focused(&self, i: usize) -> bool {
         self.focus == Some(self.sessions[i].key)
     }
@@ -92,6 +131,12 @@ impl State {
     pub fn phase(&self) -> Phase {
         if !self.active {
             return Phase::Stopped;
+        }
+        if self.listening && self.speaking {
+            return Phase::Interrupting;
+        }
+        if self.listening {
+            return Phase::Listening;
         }
         if self.speaking {
             return Phase::Speaking;
@@ -148,7 +193,8 @@ impl State {
         let id = self.next_utt;
         self.next_utt += 1;
         let heard = heard.filter(|h| h.trim() != text.trim());
-        let u = Utterance { id, text, heard, revises: None, interrupted_after: None };
+        let interrupted_after = self.cut.take();
+        let u = Utterance { id, text, heard, revises: None, interrupted_after };
         let Some(i) = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k)) else {
             return (id, None);
         };
@@ -302,7 +348,7 @@ impl Daemon {
             }
             Request::Claim { origin } => {
                 let mut st = self.state.lock().await;
-                let Some(i) = st.find(&origin) else { return empty() };
+                let Some(i) = st.find_or_attach(&origin) else { return empty() };
                 let mut items = st.take(i);
                 if st.sessions[i].remind && !items.is_empty() {
                     st.sessions[i].remind = false;
@@ -312,7 +358,7 @@ impl Daemon {
             }
             Request::ClaimStop { origin } => {
                 let mut st = self.state.lock().await;
-                let Some(i) = st.find(&origin) else { return empty() };
+                let Some(i) = st.find_or_attach(&origin) else { return empty() };
                 let s = &mut st.sessions[i];
                 if !s.pending.iter().any(|u| format::is_stop(&u.text)) {
                     return empty();
@@ -324,7 +370,7 @@ impl Daemon {
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
             Request::Event { origin, event, tool } => {
                 let mut st = self.state.lock().await;
-                let Some(i) = st.find(&origin) else { return Response::Ok };
+                let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
                     TurnEvent::TurnStart => {
                         // a typed prompt: the idle waiter must not wake a busy session
@@ -368,6 +414,7 @@ impl Daemon {
                 if let Some(m) = mic_muted {
                     st.mic_muted = m;
                 }
+                st.sync_gate();
                 if let Some(v) = voice_off {
                     st.voice_off = v;
                 }
@@ -391,7 +438,7 @@ impl Daemon {
             if !st.active {
                 return empty();
             }
-            let Some(i) = st.find(&origin) else { return empty() };
+            let Some(i) = st.find_or_attach(&origin) else { return empty() };
             st.sessions[i].in_turn = false;
             st.emit_phase();
             if !st.sessions[i].pending.is_empty() {
@@ -457,6 +504,33 @@ impl State {
     pub fn set_speaking(&mut self, on: bool) {
         self.speaking = on;
         self.emit_phase();
+    }
+    pub fn set_listening(&mut self, on: bool) {
+        if self.listening != on {
+            self.listening = on;
+            self.emit_phase();
+        }
+    }
+    pub fn speaking(&self) -> bool {
+        self.speaking
+    }
+    pub fn barge(&self) -> Arc<AtomicBool> {
+        self.barge.clone()
+    }
+    pub fn mic_gate(&self) -> Arc<AtomicBool> {
+        self.mic_gate.clone()
+    }
+    fn sync_gate(&self) {
+        self.mic_gate.store(self.active && !self.mic_muted, Ordering::SeqCst);
+    }
+    pub fn set_cut(&mut self, cut: String) {
+        self.cut = Some(cut);
+    }
+    pub fn deliver_spoken(&mut self, text: String, heard: Option<String>) -> Option<UtteranceId> {
+        if !self.active || self.mic_muted {
+            return None;
+        }
+        Some(self.deliver(text, heard).0)
     }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()

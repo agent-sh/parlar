@@ -1,19 +1,11 @@
-mod client;
-mod daemon;
-mod format;
-mod hook;
-mod mcp;
-mod proto;
-mod voice;
-
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::client::Client;
-use crate::proto::{Harness, Phase, Request, Response};
+use parley::client::{self, Client};
+use parley::proto::{Harness, Phase, Request, Response};
+use parley::{hook, mcp};
 
 #[derive(Parser)]
 #[command(name = "parley", version, about = "Voice conversation mode for coding-agent harnesses")]
@@ -41,11 +33,11 @@ impl From<HarnessArg> for Harness {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run parleyd in the foreground.
+    /// Run parleyd in the foreground (the parleyd binary next to this one). Extra arguments are
+    /// passed through.
     Daemon {
-        /// Speak through a program that reads text on stdin, e.g. `--voice-cmd espeak-ng`.
-        #[arg(long, num_args = 1.., allow_hyphen_values = true)]
-        voice_cmd: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// MCP server over stdio, launched by the harness.
     Mcp {
@@ -98,7 +90,7 @@ enum Ctl {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Daemon { voice_cmd } => daemon_main(voice_cmd),
+        Cmd::Daemon { args } => exec_daemon(args),
         Cmd::Mcp { harness } => mcp::serve(harness.into()),
         Cmd::Hook { event, harness } => {
             let code = hook::run(event, harness.into()).unwrap_or_else(|e| {
@@ -116,25 +108,12 @@ fn main() -> Result<()> {
     }
 }
 
-fn daemon_main(voice_cmd: Vec<String>) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    rt.block_on(async {
-        let engine = if voice_cmd.is_empty() {
-            voice::Engine::Silent
-        } else {
-            voice::Engine::Command(voice_cmd)
-        };
-        let d = Arc::new(daemon::Daemon::new(Arc::new(voice::Queue::new(engine))));
-        let path = client::socket_path();
-        let serve = d.serve(&path);
-        tokio::select! {
-            r = serve => r,
-            _ = tokio::signal::ctrl_c() => {
-                let _ = std::fs::remove_file(&path);
-                Ok(())
-            }
-        }
-    })
+fn exec_daemon(args: Vec<String>) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let me = std::env::current_exe()?;
+    let bin = me.with_file_name("parleyd");
+    let err = std::process::Command::new(&bin).args(args).exec();
+    anyhow::bail!("could not run {}: {err}", bin.display())
 }
 
 fn status_line() -> String {
