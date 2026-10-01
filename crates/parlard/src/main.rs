@@ -615,5 +615,47 @@ fn service() -> Result<()> {
         bail!("launchctl bootstrap {} failed", plist.display());
     }
     println!("{} runs {} at login (launchd, {domain})", plist.display(), exe.display());
+    // the floating indicator, when it was installed next to parlard
+    let overlay = exe.with_file_name("parlar-overlay");
+    if overlay.exists() {
+        let plist = home.join("Library/LaunchAgents/dev.agent-sh.parlar-overlay.plist");
+        std::fs::write(
+            &plist,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.agent-sh.parlar-overlay</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict>
+</plist>
+"#,
+                exe = overlay.display(),
+                log = log.display()
+            ),
+        )?;
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &format!("{domain}/dev.agent-sh.parlar-overlay")])
+            .output();
+        let ok = std::process::Command::new("launchctl")
+            .arg("bootstrap")
+            .arg(&domain)
+            .arg(&plist)
+            .status()
+            .context("run launchctl")?
+            .success();
+        if !ok {
+            eprintln!("the indicator's launchd agent did not load ({}); run parlar-overlay by hand", plist.display());
+        } else {
+            println!("the indicator runs at login too ({})", plist.display());
+        }
+    }
     Ok(())
 }

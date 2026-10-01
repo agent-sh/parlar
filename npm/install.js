@@ -28,7 +28,7 @@ const binaries =
   process.platform === 'win32'
     ? ['parlar.exe', 'parlard.exe', 'parlar-overlay.exe', ...WINDOWS_RUNTIME]
     : process.platform === 'darwin'
-      ? ['parlar', 'parlard', 'libonnxruntime.1.23.0.dylib']
+      ? ['parlar', 'parlard', 'parlar-overlay', 'libonnxruntime.1.23.0.dylib']
       : ['parlar', 'parlard'];
 const nativeDir = path.join(__dirname, 'bin', 'native');
 
