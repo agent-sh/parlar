@@ -68,13 +68,14 @@ impl State {
             next_key: 1,
             next_utt: 1,
             next_waiter: 1,
-            active: true,
+            // the mic stays closed until a person starts the conversation
+            active: false,
             mic_muted: false,
             voice_off: false,
             speaking: false,
             listening: false,
             barge: Arc::new(AtomicBool::new(false)),
-            mic_gate: Arc::new(AtomicBool::new(true)),
+            mic_gate: Arc::new(AtomicBool::new(false)),
             cut: None,
             ui,
         }
@@ -454,11 +455,7 @@ impl Daemon {
                             s.remind = true;
                         }
                     }
-                    if !a {
-                        for i in 0..st.sessions.len() {
-                            st.supersede(i);
-                        }
-                    }
+                    // waiters stay armed while stopped, so starting again can wake an idle session
                     st.active = a;
                 }
                 if let Some(m) = mic_muted {
@@ -485,9 +482,6 @@ impl Daemon {
     async fn wait(&self, origin: Origin, timeout_ms: u64) -> Response {
         let (id, rx) = {
             let mut st = self.state.lock().await;
-            if !st.active {
-                return empty();
-            }
             let Some(i) = st.find_or_attach(&origin) else { return empty() };
             st.sessions[i].in_turn = false;
             st.emit_phase();
@@ -630,7 +624,7 @@ mod tests {
         let mut lines = BufReader::new(rd).lines();
         let o = Origin { session: None, pids: vec![4242] };
         let r = send(&mut wr, &mut lines, &Request::Attach { origin: o, harness: Harness::Claude, cwd: String::new(), mcp: true }).await;
-        assert_eq!(r, Response::Attached { focused: true, active: true });
+        assert_eq!(r, Response::Attached { focused: true, active: false });
         assert_eq!(d.state.lock().await.sessions.len(), 1);
         drop(wr);
         drop(lines);
@@ -643,6 +637,7 @@ mod tests {
     #[tokio::test]
     async fn hook_session_survives_its_mcp_and_gets_utterances() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        d.handle(Request::Set { active: Some(true), mic_muted: None, voice_off: None, focus: None, input: None, output: None }).await;
         let hook = Origin { session: Some("s1".into()), pids: vec![10, 4242, 7] };
         d.handle(Request::Attach { origin: hook.clone(), harness: Harness::Claude, cwd: "/w".into(), mcp: false }).await;
         let (a, b) = UnixStream::pair().unwrap();
