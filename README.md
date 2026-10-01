@@ -45,7 +45,8 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 - Voice: Kokoro-82M, synthesized one sentence at a time, so there are no seams inside a sentence.
 - Indicator (GNOME): a small swarm of fireflies floating above your windows. Blue is you, amber is
   the agent, and a red spark is a failed tool call. Click to stop or start. Right-click to pick the
-  session, the mic and the speaker, or to mute or turn the voice off.
+  session, the mic and the speaker, to mute or turn the voice off, or to close the indicator
+  (`gnome-extensions enable parlar@avifenesh` brings it back).
 - Devices: switch input and output at run time. The choice is remembered, and a headset that drops
   out is reopened when it comes back.
 - Token cost: the agent's spoken lines are short, and the plugin, not the agent, prints the

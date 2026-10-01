@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- GNOME indicator: "Close indicator" in the right-click menu, also when parlard is not running. It
+  disables the extension, like the Windows and macOS overlays' item; `gnome-extensions enable
+  parlar@avifenesh` brings it back.
+
 ## [0.1.8] - 2026-10-01
 
 ### Added
