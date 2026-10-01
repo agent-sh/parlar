@@ -159,6 +159,26 @@ impl State {
         Saved { active: self.active, mic_muted: self.mic_muted, voice_off: self.voice_off, focus }.store();
     }
 
+    /// Give voice focus to session `i`. The session that had it is told in its own transcript,
+    /// so a person looking at that terminal sees where their voice went.
+    fn move_focus(&mut self, i: usize) {
+        let key = self.sessions[i].key;
+        if self.focus == Some(key) {
+            return;
+        }
+        if let Some(prev) = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k)) {
+            let to = self.sessions[i].cwd.clone();
+            let to = std::path::Path::new(&to).file_name().map(|f| f.to_string_lossy().into_owned());
+            let line = format!(
+                "parlar: voice moved to {}",
+                to.filter(|f| !f.is_empty()).unwrap_or_else(|| "another session".into())
+            );
+            self.note(prev, line);
+        }
+        self.focus = Some(key);
+        self.sessions[i].remind = true;
+    }
+
     /// A session showed up with the id that had focus before the restart.
     fn reclaim_focus(&mut self, i: usize) {
         if self.focus.is_none() && self.restore_focus.is_some() && self.sessions[i].session == self.restore_focus {
@@ -802,8 +822,7 @@ impl Daemon {
                 if !cwd.is_empty() && st.sessions[i].cwd.is_empty() {
                     st.sessions[i].cwd = cwd;
                 }
-                st.focus = Some(st.sessions[i].key);
-                st.sessions[i].remind = true;
+                st.move_focus(i);
                 st.active = true;
                 st.mic_muted = false;
                 st.sync_gate();
@@ -869,10 +888,7 @@ impl Daemon {
                 st.sync_gate();
                 if let Some(f) = focus {
                     match st.sessions.iter().position(|s| s.session.as_deref() == Some(f.as_str())) {
-                        Some(i) => {
-                            st.sessions[i].remind = true;
-                            st.focus = Some(st.sessions[i].key);
-                        }
+                        Some(i) => st.move_focus(i),
                         None => return Response::Error { message: format!("no session {f}") },
                     }
                 }
@@ -1587,6 +1603,31 @@ mod tests {
         d.handle(Request::Hear { text: "never mind".into(), heard: None }).await;
         match tokio::time::timeout(Duration::from_secs(1), parked).await {
             Ok(Ok(Response::Utterances { items, superseded: false })) => assert!(items[0].text.ends_with("never mind")),
+            r => panic!("{r:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_session_that_loses_focus_is_told_where_it_went() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let a = talking_to(&d, "a", 1001).await;
+        let b =
+            Origin { session: Some("b".into()), pids: vec![1, 1002], harness_pid: Some(1002), ..Default::default() };
+        d.handle(Request::Attach { origin: b.clone(), harness: Harness::Claude, cwd: "/w/other".into(), mcp: false })
+            .await;
+        d.handle(Request::Set {
+            active: None,
+            mic_muted: None,
+            voice_off: None,
+            focus: Some("b".into()),
+            input: None,
+            output: None,
+        })
+        .await;
+        match d.handle(Request::Transcript { origin: a }).await {
+            Response::Transcript { lines } => {
+                assert!(lines.iter().any(|l| l.contains("voice moved to other")), "{lines:?}")
+            }
             r => panic!("{r:?}"),
         }
     }
