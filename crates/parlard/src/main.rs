@@ -538,6 +538,9 @@ fn start_detached(exe: &std::path::Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
+    // the shell that ran `parlard service` (an SSH session, a terminal) may hold its children in
+    // a job that ends with it; parlard must outlive it
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     let log = log_path();
     std::fs::create_dir_all(log.parent().unwrap())?;
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
@@ -545,7 +548,16 @@ fn start_detached(exe: &std::path::Path) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out)
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .spawn()?;
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .or_else(|_| {
+            // a job that forbids breakaway: start inside it rather than not at all
+            std::process::Command::new(exe)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::fs::OpenOptions::new().append(true).open(&log)?)
+                .stderr(std::fs::OpenOptions::new().append(true).open(&log)?)
+                .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+                .spawn()
+        })?;
     Ok(())
 }

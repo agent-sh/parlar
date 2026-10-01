@@ -2,6 +2,9 @@
 //! drawn with GDI. Click to stop or start the conversation, drag to move, right-click for the
 //! menu. No GUI framework: the binary stays small and starts at login with parlard.
 
+// a windowed program: no console window when it starts
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 // both are only driven by the Windows window; the swarm's tests run everywhere
 #[cfg_attr(not(windows), allow(dead_code))]
 mod link;

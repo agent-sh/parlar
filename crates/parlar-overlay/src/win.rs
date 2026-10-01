@@ -30,6 +30,10 @@ const FRAME_MS: u32 = 33;
 const CONNECTING_GRACE_S: f32 = 8.0;
 const TIMER_FRAME: usize = 1;
 const TIMER_POLL: usize = 2;
+/// Posted by the input handlers: the menu and the toggle run message loops (TrackPopupMenu,
+/// MessageBox), so they must run outside the window procedure's borrow of the overlay.
+const WM_PARLAR_MENU: u32 = WM_APP + 1;
+const WM_PARLAR_TOGGLE: u32 = WM_APP + 2;
 const CLASS: &str = "parlar-overlay";
 
 // menu command ids
@@ -572,14 +576,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if moved {
                         save_position(hwnd);
                     } else {
-                        ov.toggle();
+                        // SAFETY: a valid window handle
+                        unsafe { PostMessageW(hwnd, WM_PARLAR_TOGGLE, 0, 0) };
                     }
                 }
                 true
             }
             WM_RBUTTONUP => {
-                let c = cursor();
-                ov.menu(c.x, c.y);
+                // SAFETY: a valid window handle
+                unsafe { PostMessageW(hwnd, WM_PARLAR_MENU, 0, 0) };
                 true
             }
             WM_DESTROY => {
@@ -591,9 +596,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
     });
     if handled {
-        0
-    } else {
+        return 0;
+    }
+    // the menu and the toggle re-enter this procedure through their own message loops, so they
+    // take the overlay out of its cell for the duration and put it back after
+    match msg {
+        WM_PARLAR_MENU | WM_PARLAR_TOGGLE => {
+            let taken = OVERLAY.with(|o| o.borrow_mut().take());
+            if let Some(mut ov) = taken {
+                if msg == WM_PARLAR_MENU {
+                    let c = cursor();
+                    ov.menu(c.x, c.y);
+                } else {
+                    ov.toggle();
+                }
+                OVERLAY.with(|o| *o.borrow_mut() = Some(ov));
+            }
+            0
+        }
         // SAFETY: default handling for everything else
-        unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
