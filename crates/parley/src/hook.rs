@@ -56,6 +56,9 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             c.call(&Request::Detach { origin: o }, quick)?;
         }
         Event::Prompt => {
+            // attach again: a session that started before parleyd gets its folder and harness
+            let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or_default().to_string();
+            c.call(&Request::Attach { origin: o.clone(), harness, cwd, mcp: false }, quick)?;
             c.call(&Request::Event { origin: o, event: TurnEvent::TurnStart, tool: None }, quick)?;
         }
         Event::PreTool => {
@@ -92,6 +95,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             }
         }
         Event::Stop => {
+            c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
             let items = items(c.call(&Request::Claim { origin: o }, quick)?);
             if !items.is_empty() {
                 print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
@@ -106,6 +110,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             }
         }
         Event::StopWait => {
+            c.call(&Request::TurnEnd { origin: o.clone(), last_message: last_message(&input) }, quick)?;
             let r = c.call(&Request::Wait { origin: o, timeout_ms: wait_ms() }, None)?;
             let items = items(r);
             if !items.is_empty() {
@@ -125,6 +130,10 @@ fn items(r: Response) -> Vec<Utterance> {
 
 fn wait_ms() -> u64 {
     std::env::var("PARLEY_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(23 * 3600 * 1000)
+}
+
+fn last_message(input: &Value) -> Option<String> {
+    input.get("last_assistant_message").and_then(Value::as_str).map(str::to_string)
 }
 
 fn tool_name(input: &Value) -> Option<String> {

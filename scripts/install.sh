@@ -34,7 +34,8 @@ install -m 755 "$T/parley" "$T/parleyd" "$BIN/"
 # parleyd finds these through its $ORIGIN/../lib/parley rpath
 install -m 644 "$T/libmoonshine.so" "$T/libonnxruntime.so.1" "$LIB/"
 
-# plugins: a local marketplace per harness, with bin/parley pointing at the installed binary
+# plugins: a local marketplace per harness. Harnesses copy a plugin into their own cache and drop
+# symlinks on the way, so bin/parley is a real copy (the CLI does not link libmoonshine).
 plugin() {
     harness=$1 dst=$2
     rm -rf "$dst"
@@ -42,7 +43,7 @@ plugin() {
     cp -R "$ROOT/plugin/$harness/." "$dst/"
     rm -rf "$dst/bin"
     mkdir "$dst/bin"
-    ln -s "$BIN/parley" "$dst/bin/parley"
+    install -m 755 "$T/parley" "$dst/bin/parley"
 }
 plugin claude "$MARKET/claude/parley"
 mkdir -p "$MARKET/claude/.claude-plugin"
@@ -86,6 +87,7 @@ parley is installed in $PREFIX.
 Claude Code:
   claude plugin marketplace add "$MARKET/claude"
   claude plugin install parley@parley
+  parley setup claude        (lets say run without a permission prompt)
   Status line (optional): set statusLine.command to "parley status" with refreshInterval 1.
 
 Codex:

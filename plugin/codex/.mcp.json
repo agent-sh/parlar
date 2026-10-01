@@ -2,8 +2,13 @@
   "mcpServers": {
     "parley": {
       "command": "./bin/parley",
-      "args": ["mcp", "--harness", "codex"],
-      "cwd": "."
+      "args": [
+        "mcp",
+        "--harness",
+        "codex"
+      ],
+      "cwd": ".",
+      "default_tools_approval_mode": "approve"
     }
   }
 }

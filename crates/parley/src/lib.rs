@@ -7,4 +7,5 @@ pub mod format;
 pub mod hook;
 pub mod mcp;
 pub mod proto;
+pub mod setup;
 pub mod voice;

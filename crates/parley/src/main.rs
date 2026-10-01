@@ -53,6 +53,11 @@ enum Cmd {
     },
     /// One-line voice state for a harness status line.
     Status,
+    /// One-time harness setup: let `say` run without a permission prompt.
+    Setup {
+        #[arg(value_enum)]
+        harness: HarnessArg,
+    },
     /// Control a running parleyd.
     Ctl {
         #[command(subcommand)]
@@ -111,6 +116,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Ctl { cmd } => ctl(cmd),
+        Cmd::Setup { harness: HarnessArg::Claude } => parley::setup::claude(),
+        Cmd::Setup { .. } => {
+            println!("nothing to set up: the codex plugin approves say in its own MCP config");
+            Ok(())
+        }
     }
 }
 

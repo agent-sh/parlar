@@ -38,6 +38,8 @@ struct Session {
     in_turn: bool,
     /// Voice mode reminder not yet delivered.
     remind: bool,
+    /// The agent spoke through `say` since the user last spoke to it.
+    said: bool,
 }
 
 pub struct State {
@@ -118,6 +120,7 @@ impl State {
             waiter: None,
             in_turn: false,
             remind: true,
+            said: false,
         });
         if self.focus.is_none() {
             self.focus = Some(key);
@@ -157,8 +160,16 @@ impl State {
         });
     }
 
+    /// Take the pending utterances for delivery, with the voice mode reminder on the first one
+    /// when the conversation was started after this session last heard from parley.
     fn take(&mut self, i: usize) -> Vec<Utterance> {
-        std::mem::take(&mut self.sessions[i].pending)
+        let s = &mut self.sessions[i];
+        let mut items = std::mem::take(&mut s.pending);
+        remind(s, &mut items);
+        if !items.is_empty() {
+            s.said = false;
+        }
+        items
     }
 
     fn supersede(&mut self, i: usize) {
@@ -203,13 +214,24 @@ impl State {
         let s = &mut self.sessions[i];
         s.pending.push(u);
         if let Some(w) = s.waiter.take() {
-            let items = std::mem::take(&mut s.pending);
+            let mut items = std::mem::take(&mut s.pending);
+            remind(s, &mut items);
+            s.said = false;
             s.in_turn = true;
             let _ = w.tx.send(WaitResult::Items(items));
         }
         let to = s.session.clone().or_else(|| Some(format!("mcp:{}", s.mcp_parent.unwrap_or(0))));
         self.emit_phase();
         (id, to)
+    }
+}
+
+fn remind(s: &mut Session, items: &mut [Utterance]) {
+    if s.remind {
+        if let Some(first) = items.first_mut() {
+            s.remind = false;
+            first.text = format!("{}\n{}", format::ACTIVATED, first.text);
+        }
     }
 }
 
@@ -249,6 +271,14 @@ impl Daemon {
         }
         let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
         eprintln!("parleyd listening on {}", path.display());
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tick.tick().await;
+                state.lock().await.prune();
+            }
+        });
         loop {
             let (stream, _) = listener.accept().await?;
             let me = self.clone();
@@ -322,6 +352,7 @@ impl Daemon {
         match req {
             Request::Attach { origin, harness, cwd, mcp } => {
                 let mut st = self.state.lock().await;
+                let self_active = st.active;
                 let i = match st.find(&origin) {
                     Some(i) => i,
                     None => {
@@ -338,6 +369,7 @@ impl Daemon {
                             waiter: None,
                             in_turn: false,
                             remind: false,
+                            said: false,
                         });
                         st.sessions.len() - 1
                     }
@@ -355,8 +387,13 @@ impl Daemon {
                     s.cwd = cwd;
                 }
                 s.harness = harness;
-                // a session started by a person takes focus; an MCP reconnect does not steal it
-                if !mcp || st.focus.is_none() {
+                if !mcp {
+                    // SessionStart only carries the voice mode note while the conversation is on
+                    s.remind = !self_active;
+                }
+                // focus follows where the person types (TurnStart); a new session only takes it
+                // when nobody has it, so starting one session does not steal voice from another
+                if st.focus.is_none() {
                     st.focus = Some(st.sessions[i].key);
                 }
                 st.emit_phase();
@@ -377,12 +414,7 @@ impl Daemon {
             Request::Claim { origin } => {
                 let mut st = self.state.lock().await;
                 let Some(i) = st.find_or_attach(&origin) else { return empty() };
-                let mut items = st.take(i);
-                if st.sessions[i].remind && !items.is_empty() {
-                    st.sessions[i].remind = false;
-                    items[0].text = format!("{}\n{}", format::ACTIVATED, items[0].text);
-                }
-                Response::Utterances { items, superseded: false }
+                Response::Utterances { items: st.take(i), superseded: false }
             }
             Request::ClaimStop { origin } => {
                 let mut st = self.state.lock().await;
@@ -392,7 +424,7 @@ impl Daemon {
                     return empty();
                 }
                 // a stop takes everything said so far with it, so the reason reads in order
-                Response::Utterances { items: std::mem::take(&mut s.pending), superseded: false }
+                Response::Utterances { items: st.take(i), superseded: false }
             }
             Request::Wait { origin, timeout_ms } => self.wait(origin, timeout_ms).await,
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
@@ -401,9 +433,12 @@ impl Daemon {
                 let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
                     TurnEvent::TurnStart => {
-                        // a typed prompt: the idle waiter must not wake a busy session
+                        // a typed prompt: voice follows the person's attention, and the idle
+                        // waiter must not wake a busy session
+                        st.focus = Some(st.sessions[i].key);
                         st.supersede(i);
                         st.sessions[i].in_turn = true;
+                        st.sessions[i].said = true;
                     }
                     TurnEvent::ToolStart => st.sessions[i].in_turn = true,
                     TurnEvent::ToolEnd | TurnEvent::ToolError => {
@@ -414,6 +449,24 @@ impl Daemon {
                     }
                 }
                 st.emit_phase();
+                Response::Ok
+            }
+            Request::TurnEnd { origin, last_message } => {
+                let (opening, voice_off) = {
+                    let mut st = self.state.lock().await;
+                    let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
+                    let quiet = !st.sessions[i].said && st.active && st.focused(i);
+                    st.sessions[i].said = true;
+                    let opening = quiet.then_some(()).and(last_message).map(|m| format::opening(&m));
+                    (opening.filter(|m| !m.is_empty()), st.voice_off)
+                };
+                if let Some(text) = opening {
+                    eprintln!("said nothing this turn, speaking its opening: {text}");
+                    let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone() });
+                    if !voice_off {
+                        self.voice.speak(text, SayKind::Answer, self.state.clone());
+                    }
+                }
                 Response::Ok
             }
             Request::Hear { text, heard } => {
@@ -521,6 +574,7 @@ impl Daemon {
             };
             let focused = st.focused(i) && st.active;
             let items = if focused { st.take(i) } else { vec![] };
+            st.sessions[i].said = true;
             (focused, items, st.voice_off)
         };
         let spoken_text = format::speakable(&text);
@@ -545,11 +599,27 @@ async fn write<T: serde::Serialize>(wr: &mut tokio::net::unix::OwnedWriteHalf, v
 }
 
 impl State {
+    /// Drop sessions whose harness process is gone without saying goodbye (a crash, a kill).
+    fn prune(&mut self) {
+        let alive = |pid: u32| Path::new(&format!("/proc/{pid}")).exists();
+        let gone: Vec<usize> = (0..self.sessions.len())
+            .rev()
+            .filter(|&i| self.sessions[i].mcp_parent.is_some_and(|p| !alive(p)))
+            .collect();
+        for i in gone {
+            self.supersede(i);
+            let key = self.sessions.remove(i).key;
+            if self.focus == Some(key) {
+                self.focus = self.sessions.last().map(|s| s.key);
+            }
+        }
+    }
+
     /// The MCP server of a session went away. A session known only through its MCP server is
-    /// dropped; one with hooks keeps living without the MCP link.
+    /// dropped; one with hooks keeps living until its harness exits.
     fn mcp_gone(&mut self, key: u64) {
         let Some(i) = self.sessions.iter().position(|s| s.key == key) else { return };
-        self.sessions[i].mcp_parent = None;
+        // a hook session keeps the harness pid so prune() can tell when the harness itself exits
         if self.sessions[i].session.is_none() {
             self.supersede(i);
             self.sessions.remove(i);

@@ -97,7 +97,7 @@ fn bare(w: &str) -> String {
 }
 
 fn git_files(dir: &Path) -> Option<Vec<String>> {
-    let out = Command::new("git").arg("-C").arg(dir).args(["ls-files", "-z"]).output().ok()?;
+    let out = Command::new("git").arg("-C").arg(dir).args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).output().ok()?;
     if !out.status.success() {
         return None;
     }

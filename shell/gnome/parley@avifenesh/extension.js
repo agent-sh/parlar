@@ -289,9 +289,22 @@ class Indicator {
             return;
         }
         let devs = {inputs: [], outputs: []};
+        let state = {sessions: []};
         try {
-            devs = await request({op: 'devices'});
+            [devs, state] = await Promise.all([request({op: 'devices'}), request({op: 'state'})]);
         } catch (_) {}
+        const sessions = (state.sessions ?? []).filter(x => x.session);
+        if (sessions.length) {
+            this._menu.addMenuItem(new PopupMenu.PopupMenuItem('Talk to', {reactive: false, style_class: 'parley-menu-title'}));
+            for (const x of sessions) {
+                const folder = x.cwd ? GLib.path_get_basename(x.cwd) : 'session';
+                const item = new PopupMenu.PopupMenuItem(`${folder} (${x.harness})`);
+                item.setOrnament(x.focused ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+                item.connect('activate', () => this._send({op: 'set', focus: x.session}));
+                this._menu.addMenuItem(item);
+            }
+            this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        }
         const section = (title, list, key) => {
             this._menu.addMenuItem(new PopupMenu.PopupMenuItem(title, {reactive: false, style_class: 'parley-menu-title'}));
             if (!list.length)

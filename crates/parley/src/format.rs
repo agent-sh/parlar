@@ -25,6 +25,9 @@ user corrects themselves, the last version wins. Use the repo context to fix mis
 pub const ACTIVATED: &str = "Voice mode is on. Talk to the user through the say tool as described \
 in the parley server instructions: short spoken sentences, no code or paths.";
 
+/// Closes every delivery: models drift back to plain text replies without it.
+pub const REPLY_CUE: &str = "(Reply out loud with the say tool.)";
+
 pub fn utterances(items: &[Utterance]) -> String {
     let mut out = String::new();
     for u in items {
@@ -49,7 +52,39 @@ pub fn utterances(items: &[Utterance]) -> String {
             ));
         }
     }
+    if !out.is_empty() {
+        out.push('\n');
+        out.push_str(REPLY_CUE);
+    }
     out
+}
+
+/// The first one or two sentences of a reply, made speakable, capped near 240 characters.
+pub fn opening(text: &str) -> String {
+    let s = speakable(text);
+    let mut out = String::new();
+    let mut sentences = 0;
+    let mut rest = s.as_str();
+    while sentences < 2 && !rest.is_empty() {
+        let end = rest
+            .char_indices()
+            .find(|&(i, c)| ".!?".contains(c) && rest[i + 1..].starts_with(' '))
+            .map(|(i, _)| i + 1)
+            .unwrap_or(rest.len());
+        let (head, tail) = rest.split_at(end);
+        if !out.is_empty() && out.len() + head.len() > 240 {
+            break;
+        }
+        out.push_str(head);
+        rest = tail;
+        sentences += 1;
+    }
+    if out.len() > 240 {
+        let cut = out[..240].rfind(' ').unwrap_or(240);
+        out.truncate(cut);
+        out.push_str("...");
+    }
+    out.trim().to_string()
 }
 
 const STOP_WORDS: &[&str] = &[
@@ -182,6 +217,13 @@ mod tests {
     #[test]
     fn speakable_drops_multiword_code_spans() {
         assert_eq!(speakable("run `npm test -- router` now"), "run now");
+    }
+
+    #[test]
+    fn opening_takes_two_sentences() {
+        assert_eq!(opening("Done. Tests pass. Next I will open a PR."), "Done. Tests pass.");
+        assert_eq!(opening("## Result\n- Removed `src/app.ts` copy"), "Result. Removed app.ts copy");
+        assert!(opening(&"word ".repeat(200)).len() <= 243);
     }
 
     #[test]

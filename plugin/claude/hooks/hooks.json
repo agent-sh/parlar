@@ -12,7 +12,9 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook wait",
             "asyncRewake": true,
-            "timeout": 86400
+            "timeout": 86400,
+            "rewakeMessage": "The user spoke to you by voice:",
+            "rewakeSummary": "voice"
           }
         ]
       }
@@ -87,7 +89,9 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook wait",
             "asyncRewake": true,
-            "timeout": 86400
+            "timeout": 86400,
+            "rewakeMessage": "The user spoke to you by voice:",
+            "rewakeSummary": "voice"
           }
         ]
       }

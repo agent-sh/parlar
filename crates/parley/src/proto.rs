@@ -92,6 +92,13 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
     },
+    /// The agent's turn ended. When it said nothing through `say` during the turn, the opening
+    /// of its final message is spoken instead, so weaker models still answer out loud.
+    TurnEnd {
+        origin: Origin,
+        #[serde(default)]
+        last_message: Option<String>,
+    },
     /// Inject an utterance as if it had been spoken. Stand-in for the mic during development.
     Hear {
         text: String,
