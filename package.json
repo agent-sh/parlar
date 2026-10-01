@@ -21,15 +21,16 @@
     "linux"
   ],
   "os": [
-    "linux"
+    "linux",
+    "win32"
   ],
   "cpu": [
     "x64",
     "arm64"
   ],
   "bin": {
-    "parlar": "npm/bin/parlar",
-    "parlard": "npm/bin/parlard"
+    "parlar": "npm/bin/parlar.js",
+    "parlard": "npm/bin/parlard.js"
   },
   "files": [
     "README.md",
@@ -37,8 +38,9 @@
     "LICENSE-APACHE",
     "npm/README.md",
     "npm/install.js",
-    "npm/bin/parlar",
-    "npm/bin/parlard"
+    "npm/bin/launch.js",
+    "npm/bin/parlar.js",
+    "npm/bin/parlard.js"
   ],
   "scripts": {
     "postinstall": "node npm/install.js"

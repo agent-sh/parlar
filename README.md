@@ -56,11 +56,12 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 | | Status |
 |---|---|
 | Linux x86_64, aarch64 | supported (prebuilt binaries and crates) |
+| Windows x86_64 | in progress: daemon, voice, recognizer, named pipe, login service and the plugin launchers run on Windows 11; no floating indicator yet |
 | Audio | PipeWire |
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
 | Indicator | GNOME Shell 50. Other desktops work without the floating indicator |
-| macOS, Windows | not supported |
+| macOS | not supported |
 
 ## Install
 
@@ -104,6 +105,9 @@ parlard service    # systemd user service for this parlard
 The package downloads the release binaries for your machine and checks their sha256. If your npm
 blocks install scripts, add `--allow-scripts=@agent-sh/parlar`.
 
+On Windows, the npm package ships everything, including the Visual C++ runtime. Then run
+`parlard fetch` and `parlard service`, which starts parlard at login through your user's Run key.
+
 ### Option D: `cargo install`
 
 ```
@@ -111,6 +115,9 @@ cargo install parlar parlard
 parlard fetch      # libmoonshine and the models, once
 parlard service    # systemd user service for this parlard
 ```
+
+On Windows, `cargo install` needs the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+installed; `parlard fetch` adds ONNX Runtime.
 
 ### Option E: prebuilt binaries
 

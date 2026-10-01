@@ -208,8 +208,11 @@ pub fn origin(session: Option<String>) -> Origin {
     Origin { session, pids, harness_pid, mcp: false, ..Default::default() }
 }
 
-/// Origin of the MCP server: the harness is its parent.
+/// Origin of the MCP server: the harness is its nearest ancestor that is not a shell. On Linux that
+/// is the parent; on Windows a harness starts the plugin's `parlar.cmd` through cmd.exe, so the
+/// parent is a shell there.
 pub fn mcp_origin(session: Option<String>) -> Origin {
     let pids = ancestors();
-    Origin { session, harness_pid: pids.first().copied(), pids, mcp: true, ..Default::default() }
+    let harness_pid = pids.iter().copied().find(|&p| !SHELLS.contains(&comm(p).as_str()));
+    Origin { session, harness_pid, pids, mcp: true, ..Default::default() }
 }

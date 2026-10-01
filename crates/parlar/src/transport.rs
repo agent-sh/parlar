@@ -45,8 +45,10 @@ fn uid() -> u32 {
 
 #[cfg(windows)]
 fn default_endpoint() -> PathBuf {
-    // one pipe per user; the pipe's own permissions keep other users out
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+    // one pipe per user; the pipe's own permissions keep other users out. The name comes from the
+    // account, not %USERNAME%: harnesses start MCP servers with a trimmed environment
+    let user = win::user_name().or_else(|| std::env::var("USERNAME").ok()).unwrap_or_else(|| "user".into());
+    let user = user.to_lowercase();
     let user: String = user.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     PathBuf::from(format!(r"\\.\pipe\parlar-{user}"))
 }
@@ -165,6 +167,16 @@ mod win {
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+    /// The account this process runs as.
+    pub fn user_name() -> Option<String> {
+        let mut buf = [0u16; 257];
+        let mut len = buf.len() as u32;
+        // SAFETY: the buffer and its length in UTF-16 units describe the same memory
+        let ok = unsafe { windows_sys::Win32::System::WindowsProgramming::GetUserNameW(buf.as_mut_ptr(), &mut len) };
+        // the length includes the terminating NUL
+        (ok != 0 && len > 1).then(|| String::from_utf16_lossy(&buf[..len as usize - 1]))
+    }
 
     /// Full access for the pipe's owner (this user) and SYSTEM, nothing for anyone else. The
     /// default descriptor would let every local account read it.

@@ -62,6 +62,21 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo build --locked --release
       - run: cargo test --locked --release
+      # the build, for trying it on a Windows desktop, with the VC++ runtime a fresh Windows lacks
+      - name: Gather the Visual C++ runtime next to the binaries
+        shell: pwsh
+        run: foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') { Copy-Item "C:\Windows\System32\$dll" target\release\ }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: parlar-windows-x86_64
+          path: |
+            target/release/parlar.exe
+            target/release/parlard.exe
+            target/release/onnxruntime.dll
+            target/release/vcruntime140.dll
+            target/release/vcruntime140_1.dll
+            target/release/msvcp140.dll
+          retention-days: 7
       - name: parlard answers on its named pipe
         shell: pwsh
         # a hung pipe must fail fast, not stall the job
@@ -76,6 +91,36 @@ jobs:
           target\release\parlar.exe ctl state
           Stop-Process -Id $d.Id
           Get-Content parlard.log
+      - name: plugin launcher (.cmd) runs parlar, passes its exit code, stays quiet without it
+        shell: cmd
+        run: |
+          set "PARLAR_BIN=%CD%\target\release\parlar.exe"
+          call plugin\claude\bin\parlar.cmd --version || exit /b 1
+          rem parlard is not running now, so ctl state must fail through the launcher
+          call plugin\claude\bin\parlar.cmd ctl state
+          if not errorlevel 1 exit /b 1
+          set "PARLAR_BIN="
+          set "PATH=C:\Windows\System32"
+          echo {} | call plugin\claude\bin\parlar.cmd hook prompt || exit /b 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: npm package installs on Windows and runs without sh
+        shell: pwsh
+        run: |
+          $prefix = "$env:RUNNER_TEMP\npm-prefix"
+          $package = npm pack --pack-destination $env:RUNNER_TEMP --silent
+          $env:PARLAR_NPM_LOCAL_DIR = "$PWD\target\release"
+          npm install -g --prefix $prefix --foreground-scripts "$env:RUNNER_TEMP\$package"
+          # no Git, no sh: only the npm prefix, node and Windows itself
+          $env:PATH = "$prefix;$(Split-Path (Get-Command node).Source);C:\Windows\System32"
+          & "$prefix\parlar.cmd" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$prefix\parlard.cmd" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # the plugin launcher finds the native binary inside the npm package
+          cmd /c "plugin\claude\bin\parlar.cmd --version"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
   msrv:
     name: rust-version
@@ -157,7 +202,7 @@ jobs:
         with:
           node-version: 24
       - run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
-      - run: node --check npm/install.js && sh -n npm/bin/parlar && sh -n npm/bin/parlard
+      - run: node --check npm/install.js && node --check npm/bin/launch.js && node --check npm/bin/parlar.js && node --check npm/bin/parlard.js
       - run: cargo build --locked
       - name: Install the packed package against the local build
         run: |
@@ -183,17 +228,29 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-      - run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y $APT_DEPS
       - run: cargo build --locked --release
       - name: Stage artifact
+        shell: bash
         run: |
           name="parlar-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp target/release/parlar target/release/parlard README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            # libmoonshine is linked in; ONNX Runtime and the Visual C++ runtime (app-local, as
+            # Microsoft allows) ship next to the binaries, so a fresh Windows needs nothing else
+            cp target/release/parlar.exe target/release/parlard.exe target/release/onnxruntime.dll "dist/$name/"
+            for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do cp "/c/Windows/System32/$dll" "dist/$name/"; done
+          else
+            cp target/release/parlar target/release/parlard "dist/$name/"
+          fi
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -249,9 +306,9 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME"
           # the install script downloads these, so they must be live first
           base="https://github.com/agent-sh/parlar/releases/download/v${version}"
-          for arch in x86_64 aarch64; do
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc; do
             for suffix in "" ".sha256"; do
-              asset="parlar-v${version}-${arch}-unknown-linux-gnu.tar.gz${suffix}"
+              asset="parlar-v${version}-${target}.tar.gz${suffix}"
               for attempt in $(seq 1 30); do
                 curl -fsSIL "${base}/${asset}" >/dev/null && break
                 [ "$attempt" = 30 ] && { echo "release asset not available: ${asset}" >&2; exit 1; }
