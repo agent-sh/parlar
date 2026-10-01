@@ -40,11 +40,14 @@ fn pick(dir: &Path, names: &[&str]) -> Result<std::path::PathBuf> {
 impl Tdt {
     pub fn load(dir: &Path, ort_lib: &Path, threads: usize) -> Result<Tdt> {
         crate::turn::init_ort(ort_lib)?;
-        let pre = session(&pick(dir, &["nemo128.onnx"])?, 1)?;
-        let enc = session(
-            &pick(dir, &["encoder-model.int4.onnx", "encoder-model.int8.onnx", "encoder-model.onnx"])?,
-            threads,
-        )?;
+        // a model may ship its own preprocessor (Phonon-2 does); onnx-asr's nemo128 otherwise
+        let pre = session(&pick(dir, &["preprocessor-model.onnx", "nemo128.onnx"])?, 1)?;
+        let enc_name = std::env::var("PARLAR_ENCODER").ok().filter(|n| !n.is_empty());
+        let enc_names: Vec<&str> = match enc_name.as_deref() {
+            Some(n) => vec![n],
+            None => vec!["encoder-model.int8.onnx", "encoder-model.exact4x2.onnx", "encoder-model.onnx"],
+        };
+        let enc = session(&pick(dir, &enc_names)?, threads)?;
         let dec = session(&pick(dir, &["decoder_joint-model.int8.onnx", "decoder_joint-model.onnx"])?, 1)?;
         let text = std::fs::read_to_string(dir.join("vocab.txt")).context("read vocab.txt")?;
         let mut vocab = Vec::new();
@@ -130,7 +133,12 @@ impl Tdt {
     }
 
     fn detokenize(&self, tokens: &[usize]) -> String {
-        let joined: String = tokens.iter().map(|&i| self.vocab[i].as_str()).collect();
+        // control pieces (<unk>, <pad>, <|...|>) are not words
+        let joined: String = tokens
+            .iter()
+            .map(|&i| self.vocab[i].as_str())
+            .filter(|t| !(t.starts_with('<') && t.ends_with('>')))
+            .collect();
         joined.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 }

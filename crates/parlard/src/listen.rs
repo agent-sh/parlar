@@ -121,8 +121,18 @@ pub fn spawn(frames: Frames, mut cfg: Config, agent_speaking: Arc<AtomicBool>, e
                 std::thread::sleep(Duration::from_millis(100));
             }
             let mut m = match Models::load() {
-                Ok(m) => m,
-                Err(e) => break e,
+                Ok(m) if m.final_stt.is_some() => m,
+                result => {
+                    // missing models are a setup problem, not a crash: stay up, say why, and try
+                    // again the next time a conversation starts
+                    let why = result.err().map(|e| format!("{e:#}")).unwrap_or_else(|| "no speech recognition model".into());
+                    eprintln!("cannot listen: {why}; run parlard fetch or /parlar:setup");
+                    let _ = tx.send(Heard::Level(0.0));
+                    while cfg.gate.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    continue;
+                }
             };
             match run(&mut m, &frames, &mut cfg, &agent_speaking, &echo, &tx) {
                 Ok(Exit::Idle) => {
