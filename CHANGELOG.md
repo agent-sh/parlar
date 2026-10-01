@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.6] - 2026-10-01
+
+### Added
+- Windows floating indicator, `parlar-overlay`: the swarm above every window, with click, drag
+  and a right-click menu for sessions, devices, mute and voice off. `parlard service` starts it at
+  login, and the Windows release and npm package ship it.
+
+### Fixed
+- On Windows, a parlard started by `parlard service` from an SSH session or a terminal no longer
+  dies with that session.
+
 ## [0.1.5] - 2026-10-01
 
 ### Added

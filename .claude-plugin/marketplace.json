@@ -9,7 +9,7 @@
       "name": "parlar",
       "source": "./plugin/claude",
       "description": "Voice conversation mode: talk to this session and hear it talk back",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "category": "productivity"
     }
   ],
