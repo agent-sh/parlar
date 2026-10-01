@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- Codex skills `$parlar:talk`, `$parlar:stop` and `$parlar:mute`. Codex plugins cannot ship slash
+  commands, and the talk skill focuses its own session through `$CODEX_THREAD_ID`.
+- The busy answer in Codex names short plain commands ("running cargo test").
+
 ### Changed
 - Each pause transcribes only the speech since the previous pause, so the cost per pause stays
   flat however long you talk (about 200 ms against 300 to 640 ms over a 13 s turn), and turns

@@ -8,5 +8,13 @@
     "name": "agent-sh",
     "url": "https://github.com/agent-sh"
   },
-  "license": "MIT OR Apache-2.0"
+  "license": "MIT OR Apache-2.0",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "parlar",
+    "shortDescription": "Voice conversation mode: talk to this session and hear it talk back",
+    "defaultPrompt": [
+      "Use $parlar:talk to start a voice conversation"
+    ]
+  }
 }
