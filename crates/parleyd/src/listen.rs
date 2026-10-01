@@ -10,6 +10,7 @@ use parley_moonshine::{ARCH_SMALL_STREAMING, Transcriber};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::audio::{self, Frames};
+use crate::vocab::Vocab;
 
 pub enum Heard {
     Level(f32),
@@ -25,7 +26,9 @@ pub enum Heard {
 pub struct Config {
     pub every_ms: usize,
     pub partials: bool,
+    /// Extra biasing terms from the command line, kept alongside the repo vocabulary.
     pub keyterms: Option<String>,
+    pub vocab: Arc<Mutex<Vocab>>,
 }
 
 /// What the agent is saying right now, so its own voice picked up by the mic is not mistaken
@@ -41,9 +44,6 @@ pub fn spawn(
 ) -> Result<()> {
     let opts: Vec<(&str, &str)> = if cfg.partials { vec![] } else { vec![("decode_incomplete_lines", "false")] };
     let t = Transcriber::load(&crate::models::stt_dir(), ARCH_SMALL_STREAMING, &opts)?;
-    if let Some(k) = &cfg.keyterms {
-        t.set_keyterms(k)?;
-    }
     std::thread::Builder::new().name("parley-listen".into()).spawn(move || {
         if let Err(e) = run(t, frames, cfg, agent_speaking, echo, tx) {
             eprintln!("listener stopped: {e:#}");
@@ -65,6 +65,7 @@ fn run(
     let chunk = frames.rate as usize * cfg.every_ms / 1000;
     let mut buf: Vec<f32> = Vec::with_capacity(chunk * 2);
     let mut ep = Endpointer::default();
+    let mut vocab_seen = 0;
     let mut last_level = Instant::now();
     let mut peak = 0f32;
     loop {
@@ -81,6 +82,25 @@ fn run(
             peak = 0.0;
             last_level = Instant::now();
         }
+        let v = cfg.vocab.lock().unwrap().clone();
+        if v.version != vocab_seen {
+            vocab_seen = v.version;
+            let mut terms = v.keyterms();
+            if let Some(k) = &cfg.keyterms {
+                terms = if terms.is_empty() { k.clone() } else { format!("{k},{terms}") };
+            }
+            if let Err(e) = t.set_keyterms(&terms) {
+                eprintln!("keyterms: {e:#}");
+            }
+        }
+        let fix = |ev: Heard| match ev {
+            Heard::Turn { text, heard } => {
+                let joined = v.join_dots(&text);
+                let heard = heard.or_else(|| (joined != text).then(|| text.clone()));
+                Heard::Turn { text: joined, heard }
+            }
+            e => e,
+        };
         if buf.len() >= chunk {
             s.add_audio(&buf, frames.rate as i32)?;
             buf.clear();
@@ -88,11 +108,11 @@ fn run(
             let speaking = agent_speaking.load(Ordering::SeqCst);
             let said = echo.lock().unwrap().clone();
             for ev in ep.update(&lines, Instant::now(), speaking, &said) {
-                let _ = tx.send(ev);
+                let _ = tx.send(fix(ev));
             }
         } else {
             for ev in ep.tick(Instant::now()) {
-                let _ = tx.send(ev);
+                let _ = tx.send(fix(ev));
             }
         }
     }

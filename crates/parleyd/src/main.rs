@@ -2,6 +2,7 @@ mod audio;
 mod listen;
 mod models;
 mod speak;
+mod vocab;
 mod wav;
 
 use std::sync::Arc;
@@ -146,7 +147,36 @@ async fn serve(cli: Cli) -> Result<()> {
             None => (Arc::default(), Arc::default()),
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = listen::Config { every_ms: 250, partials: !cli.no_partials, keyterms: cli.keyterms.clone() };
+        let vocab = Arc::new(std::sync::Mutex::new(vocab::Vocab::default()));
+        let cfg = listen::Config {
+            every_ms: 250,
+            partials: !cli.no_partials,
+            keyterms: cli.keyterms.clone(),
+            vocab: vocab.clone(),
+        };
+        // follow the focused session's repo
+        {
+            let state = d.state.clone();
+            tokio::spawn(async move {
+                let (mut last, mut version) = (None::<String>, 0u64);
+                loop {
+                    let cwd = state.lock().await.focused_cwd();
+                    if cwd != last {
+                        last = cwd.clone();
+                        version += 1;
+                        let v = match cwd {
+                            Some(dir) => tokio::task::spawn_blocking(move || vocab::Vocab::from_dir(std::path::Path::new(&dir), version))
+                                .await
+                                .unwrap_or_default(),
+                            None => vocab::Vocab::empty(version),
+                        };
+                        eprintln!("vocabulary: {} terms", v.terms.len());
+                        *vocab.lock().unwrap() = v;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+        }
         listen::spawn(frames, cfg, playing, echo, tx)?;
         let (state, lvl) = (d.state.clone(), user_level.clone());
         tokio::spawn(async move {

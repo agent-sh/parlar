@@ -576,6 +576,12 @@ impl State {
             self.emit_phase();
         }
     }
+    /// Working directory of the session with voice focus.
+    pub fn focused_cwd(&self) -> Option<String> {
+        let k = self.focus?;
+        self.sessions.iter().find(|s| s.key == k).map(|s| s.cwd.clone()).filter(|c| !c.is_empty())
+    }
+
     pub fn speaking(&self) -> bool {
         self.speaking
     }
