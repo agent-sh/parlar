@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+- Each pause transcribes only the speech since the previous pause, so the cost per pause stays
+  flat however long you talk (about 200 ms against 300 to 640 ms over a 13 s turn), and turns
+  longer than a minute keep their beginning.
+
 ### Fixed
 - Stopping or muting from the indicator (or `/parlar:stop`, `/parlar:mute`) now closes the mic
   device, not just the audio parlar reads from it. The system mic indicator goes out, and a
