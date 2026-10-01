@@ -13,6 +13,11 @@
   longer than a minute keep their beginning.
 
 ### Fixed
+- After Escape, speech wakes the session again. Claude Code runs no hook on an interrupt, so the
+  session used to stay deaf until something was typed; parlard now reads the interrupt from the
+  session transcript, and the background waiter stays parked during a turn instead of being
+  dropped. Codex reports it through its Interrupt hook. The busy answer no longer outlives an
+  interrupted step.
 - Stopping or muting from the indicator (or `/parlar:stop`, `/parlar:mute`) now closes the mic
   device, not just the audio parlar reads from it. The system mic indicator goes out, and a
   Bluetooth headset can leave hands-free mode. Speech that was being heard is dropped instead of

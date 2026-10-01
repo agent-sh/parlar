@@ -37,6 +37,14 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook prompt",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook wait-parked",
+            "asyncRewake": true,
+            "timeout": 86400,
+            "rewakeMessage": "The user spoke to you by voice:",
+            "rewakeSummary": "voice"
           }
         ]
       }
