@@ -9,6 +9,9 @@ if [ -n "$found" ]; then
     real=$(readlink -f "$found" 2>/dev/null || echo "$found")
     case "$real" in
         */npm/bin/parlar.js) npm_native=$(dirname "$real")/native/parlar ;;
+        # Windows npm writes a plain shim beside its node_modules instead of a symlink
+        *) [ -d "$(dirname "$found")/node_modules/@agent-sh/parlar/npm/bin/native" ] &&
+            npm_native=$(dirname "$found")/node_modules/@agent-sh/parlar/npm/bin/native/parlar ;;
     esac
 fi
 # the .exe names are Windows under Git Bash, which Claude Code runs hooks through
