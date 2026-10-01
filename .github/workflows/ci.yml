@@ -160,6 +160,46 @@ jobs:
           target/release/parlar ctl state | grep -q '"session": "ci"'
           kill %1
           cat parlard.log
+      - name: a downloaded tarball runs under Gatekeeper, and the launchd agent loads
+        timeout-minutes: 5
+        run: |
+          # what a user gets: the release tarball, downloaded (quarantined) and unsigned
+          name="parlar-test-aarch64-apple-darwin"
+          mkdir -p "dist/$name"
+          cp target/release/parlar target/release/parlard target/release/libonnxruntime.1.23.0.dylib "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          mkdir -p "$RUNNER_TEMP/dl" && cp "dist/$name.tar.gz" "$RUNNER_TEMP/dl/"
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;00000000-0000-0000-0000-000000000000" "$RUNNER_TEMP/dl/$name.tar.gz"
+          tar -C "$RUNNER_TEMP/dl" -xzf "$RUNNER_TEMP/dl/$name.tar.gz"
+          xattr -l "$RUNNER_TEMP/dl/$name/parlard" || true
+          # the binaries are ad-hoc signed by the linker; Gatekeeper lets a quarantined one run from
+          # the terminal (it only blocks double-clicked apps), and spctl says what a user would see
+          codesign -dv "$RUNNER_TEMP/dl/$name/parlard" 2>&1 | head -3
+          spctl --assess --type execute "$RUNNER_TEMP/dl/$name/parlard" 2>&1 || echo "spctl: not notarized (expected for an unsigned download)"
+          "$RUNNER_TEMP/dl/$name/parlard" --version
+          XDG_DATA_HOME="$RUNNER_TEMP/data" "$RUNNER_TEMP/dl/$name/parlard" final "$RUNNER_TEMP/m.wav" | grep -i mac
+          # the launchd agent: written, loadable, and it starts parlard
+          XDG_DATA_HOME="$RUNNER_TEMP/data" "$RUNNER_TEMP/dl/$name/parlard" service || echo "launchctl bootstrap failed on the runner (no GUI session): $?"
+          plutil -lint ~/Library/LaunchAgents/dev.agent-sh.parlard.plist
+          cat ~/Library/LaunchAgents/dev.agent-sh.parlard.plist
+          sleep 3
+          launchctl print "gui/$(id -u)/dev.agent-sh.parlard" 2>&1 | grep -E 'state|pid|program' | head -5 || true
+          pgrep -fl "$RUNNER_TEMP/dl/$name/parlard" || echo "parlard not running under launchd"
+          launchctl bootout "gui/$(id -u)/dev.agent-sh.parlard" 2>/dev/null || true
+      - name: the plugin's hook launcher and MCP server run on macOS
+        timeout-minutes: 5
+        run: |
+          # the hook launcher under macOS's /bin/sh, the MCP server start, and the socket path
+          # Claude Code would use, all with the data home the previous step filled
+          export XDG_DATA_HOME="$RUNNER_TEMP/data"
+          target/release/parlard --no-mic --silent 2> parlard2.log &
+          sleep 3
+          echo '{"session_id":"mac","cwd":"'"$PWD"'"}' | PARLAR_BIN=$PWD/target/release/parlar /bin/sh plugin/claude/bin/parlar hook session-start --harness claude
+          echo '{"session_id":"mac","cwd":"'"$PWD"'"}' | PARLAR_BIN=$PWD/target/release/parlar /bin/sh plugin/claude/bin/parlar hook prompt --harness claude
+          target/release/parlar ctl state | grep -q '"session": "mac"'
+          # the MCP server attaches and answers initialize over stdio
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | target/release/parlar mcp --harness claude | grep -q '"say"'
+          kill %1
 
   msrv:
     name: rust-version
