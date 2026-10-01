@@ -99,6 +99,9 @@ enum Cmd {
         out: std::path::PathBuf,
         #[arg(long, default_value = "kokoro_af_heart")]
         voice: String,
+        /// One synthesis call per sentence instead of streamed chunks.
+        #[arg(long)]
+        sentences: bool,
     },
 }
 
@@ -106,7 +109,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Some(Cmd::Fetch { voice }) => return models::fetch(&voice),
-        Some(Cmd::Speak { text, out, voice }) => return speak(&text, &out, &voice),
+        Some(Cmd::Speak { text, out, voice, sentences }) => return speak(&text, &out, &voice, sentences),
         Some(Cmd::Turn { wav, dump }) => {
             let (pcm, rate) = wav::read(&wav)?;
             let pcm = audio::resample(&pcm, rate, turn::RATE as u32);
@@ -307,13 +310,33 @@ async fn serve(cli: Cli) -> Result<()> {
     r
 }
 
-fn speak(text: &str, out: &std::path::Path, voice: &str) -> Result<()> {
+fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Result<()> {
     use parley_moonshine::{Next, Tts};
     use std::time::Instant;
     let t0 = Instant::now();
     let tts = Tts::load(&models::tts_dir(), "en_us", voice, &[])?;
     let load = t0.elapsed();
     let t1 = Instant::now();
+    if sentences {
+        let (mut pcm, mut rate, mut first) = (Vec::new(), 24000, None);
+        for s in parley_moonshine::split_utterances("en_us", text)? {
+            let (p, r) = tts.synthesize(&s)?;
+            first.get_or_insert(t1.elapsed());
+            rate = r;
+            pcm.extend_from_slice(&speak::tighten(&p, r as u32));
+        }
+        let total = t1.elapsed();
+        wav::write(out, &pcm, rate as u32)?;
+        eprintln!(
+            "load {:.0} ms, first audio {:.0} ms, synth {:.0} ms for {:.1} s of audio, per sentence -> {}",
+            load.as_secs_f32() * 1e3,
+            first.unwrap_or_default().as_secs_f32() * 1e3,
+            total.as_secs_f32() * 1e3,
+            pcm.len() as f32 / rate as f32,
+            out.display()
+        );
+        return Ok(());
+    }
     tts.push(text)?;
     tts.end_input()?;
     let (mut pcm, mut rate, mut first) = (Vec::new(), 24000, None);

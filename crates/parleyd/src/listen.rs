@@ -134,7 +134,9 @@ fn run(
     let mut last_level = Instant::now();
     let mut last_rx = Instant::now();
     let mut peak = 0f32;
-    let mut recent = Recent::new(frames.rate as usize * 8);
+    // the end-of-turn model reads the last 8 s; turn dumps for evaluation keep up to 30 s
+    let mut recent = Recent::new(frames.rate as usize * 30);
+    let dump = std::env::var_os("PARLEY_DUMP_TURNS").map(std::path::PathBuf::from);
     loop {
         let mut ready = None;
         match frames.rx.recv_timeout(Duration::from_millis(30)) {
@@ -211,7 +213,13 @@ fn run(
         }
         let Some(audio) = ready else {
             for ev in ep.tick(Instant::now()) {
-                let _ = tx.send(fix(ev));
+                let ev = fix(ev);
+                dump_turn(dump.as_deref(), &ev, &recent, frames.rate);
+                if matches!(ev, Heard::Turn { .. }) {
+                    // the next turn's audio starts here, for the end-of-turn model and dumps
+                    recent.buf.clear();
+                }
+                let _ = tx.send(ev);
             }
             continue;
         };
@@ -231,9 +239,25 @@ fn run(
         let speaking = agent_speaking.load(Ordering::SeqCst);
         let said = echo.current();
         for ev in ep.update(&lines, Instant::now(), speaking, &said) {
-            let _ = tx.send(fix(ev));
+            let ev = fix(ev);
+            dump_turn(dump.as_deref(), &ev, &recent, frames.rate);
+            if matches!(ev, Heard::Turn { .. }) {
+                recent.buf.clear();
+            }
+            let _ = tx.send(ev);
         }
     }
+}
+
+/// With PARLEY_DUMP_TURNS set, keep each finished turn's recent audio and its text, for comparing
+/// recognizers on real speech. Off unless asked for.
+fn dump_turn(dir: Option<&std::path::Path>, ev: &Heard, recent: &Recent, rate: u32) {
+    let (Some(dir), Heard::Turn { text, heard }) = (dir, ev) else { return };
+    let _ = std::fs::create_dir_all(dir);
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let audio: Vec<f32> = recent.buf.iter().copied().collect();
+    let _ = crate::wav::write(&dir.join(format!("{stamp}.wav")), &audio, rate);
+    let _ = std::fs::write(dir.join(format!("{stamp}.txt")), format!("{}\n{}\n", text, heard.clone().unwrap_or_default()));
 }
 
 /// Decides which mic audio reaches the recognizer, and when.

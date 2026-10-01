@@ -119,6 +119,23 @@ mod sys {
             version: i32,
         ) -> i32;
         pub fn moonshine_free_tts_synthesizer(handle: i32);
+        pub fn moonshine_text_to_speech(
+            handle: i32,
+            text: *const c_char,
+            options: *const Opt,
+            options_count: u64,
+            out_audio: *mut *mut f32,
+            out_size: *mut u64,
+            out_rate: *mut i32,
+        ) -> i32;
+        pub fn moonshine_tts_split_utterances(
+            language: *const c_char,
+            text: *const c_char,
+            options: *const Opt,
+            options_count: u64,
+            out_units_json: *mut *mut c_char,
+        ) -> i32;
+        pub fn moonshine_free_buffer(ptr: *mut c_void);
         pub fn moonshine_tts_push_text(handle: i32, text: *const c_char) -> i32;
         pub fn moonshine_tts_flush(handle: i32) -> i32;
         pub fn moonshine_tts_end_input(handle: i32) -> i32;
@@ -208,6 +225,51 @@ fn manifest(
 unsafe extern "C" {
     #[link_name = "free"]
     fn libc_free(p: *mut c_void);
+}
+
+/// Split a passage into the sentences a synthesizer speaks one at a time.
+pub fn split_utterances(lang: &str, text: &str) -> Result<Vec<String>> {
+    let l = CString::new(lang)?;
+    let t = CString::new(text)?;
+    let mut out: *mut c_char = ptr::null_mut();
+    // SAFETY: valid strings; out receives a buffer released with moonshine_free_buffer
+    check(unsafe { sys::moonshine_tts_split_utterances(l.as_ptr(), t.as_ptr(), ptr::null(), 0, &mut out) })?;
+    let json = cstr(out);
+    // SAFETY: documented to be released with moonshine_free_buffer
+    unsafe { sys::moonshine_free_buffer(out as *mut c_void) };
+    Ok(parse_string_array(&json))
+}
+
+/// The JSON array of strings the splitter returns, without pulling in a JSON crate.
+fn parse_string_array(json: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let (mut in_str, mut esc) = (false, false);
+    for c in json.chars() {
+        if !in_str {
+            if c == '"' {
+                in_str = true;
+                cur.clear();
+            }
+            continue;
+        }
+        if esc {
+            cur.push(match c {
+                'n' => '\n',
+                't' => '\t',
+                other => other,
+            });
+            esc = false;
+        } else if c == '\\' {
+            esc = true;
+        } else if c == '"' {
+            in_str = false;
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    out
 }
 
 /// JSON download manifest for a speech-to-text model.
@@ -378,6 +440,25 @@ impl Tts {
             )
         })?;
         Ok(Tts { h })
+    }
+
+    /// Synthesize a whole text in one call. Slower to first audio than streaming, but with the
+    /// prosody of the full phrase and no seams inside it.
+    pub fn synthesize(&self, text: &str) -> Result<(Vec<f32>, i32)> {
+        let t = CString::new(text)?;
+        let (mut audio, mut size, mut rate): (*mut f32, u64, i32) = (ptr::null_mut(), 0, 0);
+        // SAFETY: valid handle and string; the buffer is malloc'd by the library and freed below
+        check(unsafe {
+            sys::moonshine_text_to_speech(self.h, t.as_ptr(), ptr::null(), 0, &mut audio, &mut size, &mut rate)
+        })?;
+        if audio.is_null() {
+            return Ok((Vec::new(), rate));
+        }
+        // SAFETY: size samples follow audio
+        let pcm = unsafe { std::slice::from_raw_parts(audio, size as usize) }.to_vec();
+        // SAFETY: allocated with malloc by the library
+        unsafe { libc_free(audio as *mut c_void) };
+        Ok((pcm, rate))
     }
 
     pub fn push(&self, text: &str) -> Result<()> {
