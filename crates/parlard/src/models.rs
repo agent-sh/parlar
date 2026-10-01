@@ -273,6 +273,7 @@ mod tests {
             size: Some(512),
             checksum: Some("dPbFiw==".into()),
             checksum_type: Some("crc32c".into()),
+            sha256: None,
         };
         assert_eq!(f.crc32c().unwrap(), Some(0x74f6_c58b));
         let none = File { checksum: Some(String::new()), checksum_type: Some(String::new()), ..f };
