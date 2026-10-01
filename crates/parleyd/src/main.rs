@@ -78,6 +78,9 @@ enum Cmd {
         /// Only decode lines once they are complete.
         #[arg(long)]
         no_partials: bool,
+        /// Run the capture cleanup (noise suppression, gain) first, as the live mic path does.
+        #[arg(long)]
+        clean: bool,
     },
     /// Score a 16 kHz WAV with the end-of-turn model and dump its features.
     Turn {
@@ -122,8 +125,8 @@ fn main() -> Result<()> {
             outs.iter().for_each(|d| println!("  {}  {}", d.name, d.id));
             return Ok(());
         }
-        Some(Cmd::Transcribe { wav, keyterms, every_ms, no_partials }) => {
-            return transcribe(&wav, keyterms.as_deref(), every_ms, no_partials);
+        Some(Cmd::Transcribe { wav, keyterms, every_ms, no_partials, clean }) => {
+            return transcribe(&wav, keyterms.as_deref(), every_ms, no_partials, clean);
         }
         None => {}
     }
@@ -182,6 +185,7 @@ async fn serve(cli: Cli) -> Result<()> {
         };
         let aec = match &kokoro {
             Some((_, p)) if !cli.no_aec && cli.input_wav.is_empty() => Some(aec::Aec::new(p.far.clone())),
+            _ if cli.input_wav.is_empty() => Some(aec::Aec::cleanup_only()),
             _ => None,
         };
         let cfg = listen::Config {
@@ -310,10 +314,16 @@ fn speak(text: &str, out: &std::path::Path, voice: &str) -> Result<()> {
     Ok(())
 }
 
-fn transcribe(path: &std::path::Path, keyterms: Option<&str>, every_ms: usize, no_partials: bool) -> Result<()> {
+fn transcribe(path: &std::path::Path, keyterms: Option<&str>, every_ms: usize, no_partials: bool, clean: bool) -> Result<()> {
     use parley_moonshine::{ARCH_SMALL_STREAMING, Transcriber};
     use std::time::Instant;
     let (pcm, rate) = wav::read(path)?;
+    let (pcm, rate) = if clean {
+        let x = audio::resample(&pcm, rate, aec::RATE);
+        (aec::Aec::cleanup_only().process(&x), aec::RATE)
+    } else {
+        (pcm, rate)
+    };
     let t0 = Instant::now();
     let opts: &[(&str, &str)] = if no_partials { &[("decode_incomplete_lines", "false")] } else { &[] };
     let t = Transcriber::load(&models::stt_dir(), ARCH_SMALL_STREAMING, opts)?;

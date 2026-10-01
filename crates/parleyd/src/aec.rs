@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use sonora::config::EchoCanceller;
+use sonora::config::{AdaptiveDigital, EchoCanceller, GainController2, HighPassFilter, NoiseSuppression, NoiseSuppressionLevel};
 use sonora::{AudioProcessing, Config, StreamConfig};
 
 pub const RATE: u32 = 16000;
@@ -42,10 +42,31 @@ pub struct Aec {
 }
 
 impl Aec {
+    /// Echo cancellation against `far`, plus a high-pass filter, strong noise suppression and
+    /// adaptive gain so a quiet voice on a hissy laptop mic still reaches the recognizer.
     pub fn new(far: Far) -> Aec {
+        Aec::with(far, true)
+    }
+
+    /// The same cleanup without echo cancellation (no speaker to cancel).
+    pub fn cleanup_only() -> Aec {
+        Aec::with(Far::default(), false)
+    }
+
+    fn with(far: Far, echo: bool) -> Aec {
         let sc = StreamConfig::new(RATE, 1);
+        let config = Config {
+            echo_canceller: echo.then(EchoCanceller::default),
+            high_pass_filter: Some(HighPassFilter::default()),
+            noise_suppression: Some(NoiseSuppression { level: NoiseSuppressionLevel::High, ..Default::default() }),
+            gain_controller2: Some(GainController2 {
+                adaptive_digital: Some(AdaptiveDigital::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
         let mut apm = AudioProcessing::builder()
-            .config(Config { echo_canceller: Some(EchoCanceller::default()), ..Default::default() })
+            .config(config)
             .capture_config(sc)
             .render_config(sc)
             .build();
