@@ -1,0 +1,19 @@
+.parlar-mute {
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  background-color: rgba(24, 26, 31, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e8ecf1;
+}
+
+.parlar-mute:hover,
+.parlar-mute:focus {
+  background-color: rgba(44, 47, 54, 0.95);
+}
+
+.parlar-menu-title {
+  font-size: 0.85em;
+  font-weight: bold;
+  color: #9aa0a9;
+}
