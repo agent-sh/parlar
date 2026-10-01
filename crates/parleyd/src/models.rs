@@ -43,6 +43,16 @@ pub fn vad_model() -> PathBuf {
     root().join("vad").join(VAD_FILE)
 }
 
+/// The final-transcript model: Phonon-2 when present, else Parakeet TDT 0.6B v3.
+pub fn final_dir() -> PathBuf {
+    let stt = root().join("stt");
+    ["phonon-2", "parakeet-tdt-0.6b-v3"]
+        .iter()
+        .map(|n| stt.join(n))
+        .find(|d| d.join("vocab.txt").exists())
+        .unwrap_or_else(|| stt.join("phonon-2"))
+}
+
 pub fn turn_model() -> PathBuf {
     root().join("turn").join(TURN_FILE)
 }

@@ -3,6 +3,7 @@ mod audio;
 mod listen;
 mod models;
 mod speak;
+mod stt;
 mod turn;
 mod vad;
 mod vocab;
@@ -85,6 +86,15 @@ enum Cmd {
         #[arg(long)]
         clean: bool,
     },
+    /// Transcribe a WAV with the final-transcript model (Phonon-2 or Parakeet TDT, ONNX).
+    Final {
+        wav: std::path::PathBuf,
+        /// Model directory in the onnx-asr layout.
+        #[arg(long)]
+        model: Option<std::path::PathBuf>,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
     /// Score a 16 kHz WAV with the end-of-turn model and dump its features.
     Turn {
         wav: std::path::PathBuf,
@@ -110,6 +120,24 @@ fn main() -> Result<()> {
     match cli.cmd {
         Some(Cmd::Fetch { voice }) => return models::fetch(&voice),
         Some(Cmd::Speak { text, out, voice, sentences }) => return speak(&text, &out, &voice, sentences),
+        Some(Cmd::Final { wav, model, threads }) => {
+            let dir = model.unwrap_or_else(models::final_dir);
+            let t0 = std::time::Instant::now();
+            let mut m = stt::Tdt::load(&dir, &models::ort_lib(), threads)?;
+            let load = t0.elapsed();
+            let (pcm, rate) = wav::read(&wav)?;
+            let pcm = audio::resample(&pcm, rate, 16000);
+            let t1 = std::time::Instant::now();
+            let text = m.transcribe(&pcm)?;
+            println!("{text}");
+            eprintln!(
+                "load {:.0} ms, {:.1} s of audio in {:.0} ms",
+                load.as_secs_f32() * 1e3,
+                pcm.len() as f32 / 16000.0,
+                t1.elapsed().as_secs_f32() * 1e3
+            );
+            return Ok(());
+        }
         Some(Cmd::Turn { wav, dump }) => {
             let (pcm, rate) = wav::read(&wav)?;
             let pcm = audio::resample(&pcm, rate, turn::RATE as u32);
@@ -220,8 +248,19 @@ async fn serve(cli: Cli) -> Result<()> {
                 None
             }
         };
+        let final_stt = match stt::Tdt::load(&models::final_dir(), &models::ort_lib(), 4) {
+            Ok(m) => {
+                eprintln!("final transcripts: {}", models::final_dir().display());
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("no final-transcript model, using the streaming text: {e:#}");
+                None
+            }
+        };
         let cfg = listen::Config {
             every_ms: 250,
+            final_stt,
             vad,
             aec,
             turn,

@@ -27,6 +27,9 @@ pub struct Config {
     pub every_ms: usize,
     /// Voice detector that gates the recognizer; without it the recognizer sees everything.
     pub vad: Option<crate::vad::Vad>,
+    /// Final-transcript model run on each finished turn; the streaming recognizer's text is used
+    /// only for live captions and turn detection when it is present.
+    pub final_stt: Option<crate::stt::Tdt>,
     /// Echo canceller fed by the speaker; without it only the text echo guard applies.
     pub aec: Option<crate::aec::Aec>,
     /// End-of-turn audio model; without it the word rule alone decides.
@@ -135,7 +138,7 @@ fn run(
     let mut last_rx = Instant::now();
     let mut peak = 0f32;
     // the end-of-turn model reads the last 8 s; turn dumps for evaluation keep up to 30 s
-    let mut recent = Recent::new(frames.rate as usize * 30);
+    let mut recent = Recent::new(frames.rate as usize * 60);
     let dump = std::env::var_os("PARLEY_DUMP_TURNS").map(std::path::PathBuf::from);
     loop {
         let mut ready = None;
@@ -213,7 +216,7 @@ fn run(
         }
         let Some(audio) = ready else {
             for ev in ep.tick(Instant::now()) {
-                let ev = fix(ev);
+                let ev = fix(finalize(cfg.final_stt.as_mut(), &recent, ev));
                 dump_turn(dump.as_deref(), &ev, &recent, frames.rate);
                 if matches!(ev, Heard::Turn { .. }) {
                     // the next turn's audio starts here, for the end-of-turn model and dumps
@@ -239,12 +242,33 @@ fn run(
         let speaking = agent_speaking.load(Ordering::SeqCst);
         let said = echo.current();
         for ev in ep.update(&lines, Instant::now(), speaking, &said) {
-            let ev = fix(ev);
+            let ev = fix(finalize(cfg.final_stt.as_mut(), &recent, ev));
             dump_turn(dump.as_deref(), &ev, &recent, frames.rate);
             if matches!(ev, Heard::Turn { .. }) {
                 recent.buf.clear();
             }
             let _ = tx.send(ev);
+        }
+    }
+}
+
+/// Re-transcribe a finished turn with the final-transcript model. The streaming text stays only
+/// if the model fails or hears nothing.
+fn finalize(model: Option<&mut crate::stt::Tdt>, recent: &Recent, ev: Heard) -> Heard {
+    let (Some(model), Heard::Turn { text, heard }) = (model, &ev) else { return ev };
+    let audio: Vec<f32> = recent.buf.iter().copied().collect();
+    let t0 = Instant::now();
+    match model.transcribe(&audio) {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let cleaned = clean(&raw);
+            eprintln!("final ({:.0} ms): {cleaned}", t0.elapsed().as_secs_f32() * 1e3);
+            let heard = (cleaned != raw).then_some(raw);
+            Heard::Turn { text: cleaned, heard }
+        }
+        Ok(_) => Heard::Turn { text: text.clone(), heard: heard.clone() },
+        Err(e) => {
+            eprintln!("final transcript failed, keeping the streaming text: {e:#}");
+            ev
         }
     }
 }
