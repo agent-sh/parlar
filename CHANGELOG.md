@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.5] - 2026-10-01
+
+### Added
+- Windows x86_64: release builds and the npm package (with ONNX Runtime and the Visual C++
+  runtime beside the binaries), a named pipe open only to its user, a login start through the
+  per-user Run key (`parlard service`), and `.cmd` plugin launchers. Tested on Windows 11 with
+  Claude Code: the say tool, hooks through Git Bash, voice and recognition. No floating
+  indicator on Windows yet.
+
+### Fixed
+- The npm bins are Node launchers, so they work in any shell; the plugin launchers run the
+  native binary inside the npm package, so hooks never start Node.
+- The MCP server finds its harness past shells, so it shares one session with the hooks when the
+  harness starts it through a shell.
+
 ## [0.1.4] - 2026-10-01
 
 ### Fixed
