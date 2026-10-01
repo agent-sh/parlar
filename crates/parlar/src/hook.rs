@@ -72,11 +72,12 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             // attach again: a session that started before parlard gets its folder and harness
             let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or_default().to_string();
             c.call(&Request::Attach { origin: o.clone(), harness, cwd, mcp: false }, quick)?;
-            c.call(&Request::Event { origin: o, event: TurnEvent::TurnStart, tool: None }, quick)?;
+            c.call(&Request::Event { origin: o, event: TurnEvent::TurnStart, tool: None, detail: None }, quick)?;
         }
         Event::PreTool => {
             let tool = tool_name(&input);
-            c.call(&Request::Event { origin: o.clone(), event: TurnEvent::ToolStart, tool }, quick)?;
+            let detail = tool_detail(&input);
+            c.call(&Request::Event { origin: o.clone(), event: TurnEvent::ToolStart, tool, detail }, quick)?;
             if subagent {
                 return Ok(0);
             }
@@ -98,7 +99,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
         Event::PostTool | Event::PostToolFailure => {
             let failed = event == Event::PostToolFailure || tool_failed(&input);
             let ev = if failed { TurnEvent::ToolError } else { TurnEvent::ToolEnd };
-            c.call(&Request::Event { origin: o.clone(), event: ev, tool: tool_name(&input) }, quick)?;
+            c.call(&Request::Event { origin: o.clone(), event: ev, tool: tool_name(&input), detail: None }, quick)?;
             if subagent {
                 return Ok(0);
             }
@@ -212,6 +213,13 @@ fn last_message(input: &Value) -> Option<String> {
 
 fn tool_name(input: &Value) -> Option<String> {
     input.get("tool_name").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The agent's own words for what a tool call does: Claude Code's shell tool carries a
+/// `description`, Codex's a `justification`.
+fn tool_detail(input: &Value) -> Option<String> {
+    let args = input.get("tool_input")?;
+    ["description", "justification"].iter().find_map(|k| args.get(*k).and_then(Value::as_str)).map(str::to_string)
 }
 
 fn tool_failed(input: &Value) -> bool {

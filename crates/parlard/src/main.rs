@@ -243,7 +243,7 @@ async fn serve(cli: Cli) -> Result<()> {
             });
         }
         listen::spawn(frames, cfg, playing, echo, tx)?;
-        let (state, lvl) = (d.state.clone(), user_level.clone());
+        let (state, lvl, daemon) = (d.state.clone(), user_level.clone(), d.clone());
         tokio::spawn(async move {
             while let Some(h) = rx.recv().await {
                 match h {
@@ -259,11 +259,22 @@ async fn serve(cli: Cli) -> Result<()> {
                         state.lock().await.barge().store(true, Ordering::SeqCst);
                     }
                     listen::Heard::Turn { text, heard } => {
-                        let mut st = state.lock().await;
-                        st.set_listening(false);
-                        match st.deliver_spoken(text.clone(), heard) {
-                            Some(id) => eprintln!("heard u{id}: {text}"),
-                            None => eprintln!("heard (dropped, voice mode off): {text}"),
+                        let ack = {
+                            let mut st = state.lock().await;
+                            st.set_listening(false);
+                            match st.deliver_spoken(text.clone(), heard) {
+                                Some(id) => {
+                                    eprintln!("heard u{id}: {text}");
+                                    st.busy_ack(&text)
+                                }
+                                None => {
+                                    eprintln!("heard (dropped, voice mode off): {text}");
+                                    None
+                                }
+                            }
+                        };
+                        if let Some(ack) = ack {
+                            daemon.announce(ack).await;
                         }
                     }
                 }

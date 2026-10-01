@@ -120,6 +120,9 @@ pub enum Request {
         event: TurnEvent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
+        /// What a starting tool call is doing, in the agent's words (a shell command's description).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// The agent's turn ended. When it said nothing through `say` during the turn, the opening
     /// of its final message is spoken instead, so weaker models still answer out loud.

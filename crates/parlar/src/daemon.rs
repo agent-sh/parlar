@@ -47,6 +47,10 @@ struct Session {
     blocked_at: Option<std::time::Instant>,
     /// Conversation lines not yet printed in this session's terminal.
     transcript: Vec<String>,
+    /// The tool call in flight: what it does and when it started.
+    running: Option<(Option<String>, std::time::Instant)>,
+    /// The user was already told that this tool call holds their words.
+    acked: bool,
 }
 
 impl Session {
@@ -66,6 +70,8 @@ impl Session {
             said: false,
             blocked_at: None,
             transcript: Vec::new(),
+            running: None,
+            acked: false,
         }
     }
 
@@ -247,6 +253,7 @@ impl State {
             s.pending = items;
             s.pending.extend(rest);
             s.in_turn = false;
+            s.running = None;
         }
     }
 
@@ -334,6 +341,7 @@ impl State {
             if let Err(WaitResult::Items(back)) = w.tx.send(WaitResult::Items(items)) {
                 s.pending = back;
                 s.in_turn = false;
+                s.running = None;
             }
         }
         let to = s.session.clone().or_else(|| Some(format!("mcp:{}", s.mcp_parent.unwrap_or(0))));
@@ -608,7 +616,7 @@ impl Daemon {
             }
             Request::Wait { origin, timeout_ms, holds_turn } => self.wait(origin, timeout_ms, holds_turn).await,
             Request::Say { origin, text, kind } => self.say(origin, text, kind).await,
-            Request::Event { origin, event, tool } => {
+            Request::Event { origin, event, tool, detail } => {
                 let mut st = self.state.lock().await;
                 let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
                 match event {
@@ -619,9 +627,15 @@ impl Daemon {
                         st.sessions[i].in_turn = true;
                         st.sessions[i].said = true;
                     }
-                    TurnEvent::ToolStart => st.sessions[i].in_turn = true,
+                    TurnEvent::ToolStart => {
+                        let s = &mut st.sessions[i];
+                        s.in_turn = true;
+                        s.running = Some((detail, std::time::Instant::now()));
+                        s.acked = false;
+                    }
                     TurnEvent::ToolEnd | TurnEvent::ToolError => {
                         st.sessions[i].in_turn = true;
+                        st.sessions[i].running = None;
                         if st.focused(i) {
                             let _ = st.ui.send(Ui::Tool { ok: event == TurnEvent::ToolEnd, name: tool });
                         }
@@ -634,6 +648,7 @@ impl Daemon {
                 let (opening, voice_off) = {
                     let mut st = self.state.lock().await;
                     let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
+                    st.sessions[i].running = None;
                     let quiet = !st.sessions[i].said && st.active && st.focused(i);
                     st.sessions[i].said = true;
                     let opening = quiet.then_some(()).and(last_message).map(|m| format::opening(&m));
@@ -769,6 +784,7 @@ impl Daemon {
                 return Response::Utterances { items: vec![], superseded: true };
             }
             st.sessions[i].in_turn = false;
+            st.sessions[i].running = None;
             st.emit_phase();
             if !st.sessions[i].pending.is_empty() {
                 st.sessions[i].in_turn = true;
@@ -793,6 +809,15 @@ impl Daemon {
                 }
                 empty()
             }
+        }
+    }
+
+    /// Speak a line of parlar's own (not the agent's), when voice is on.
+    pub async fn announce(&self, text: String) {
+        let voice_off = self.state.lock().await.voice_off;
+        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone() });
+        if !voice_off {
+            self.voice.speak(text, SayKind::Status, self.state.clone());
         }
     }
 
@@ -906,8 +931,46 @@ impl State {
         }
         Some(self.deliver(text, heard).0)
     }
+
+    /// When the focused session is stuck in a long tool call, the user's words wait for it to end
+    /// (no harness lets a hook into a running call). Says so once per call, in parlar's own
+    /// voice, so the user is not left talking to silence. `text` is what they just said.
+    pub fn busy_ack(&mut self, text: &str) -> Option<String> {
+        let i = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k))?;
+        let s = &mut self.sessions[i];
+        let (detail, since) = s.running.as_ref()?;
+        if s.acked || since.elapsed() < LONG_STEP {
+            return None;
+        }
+        s.acked = true;
+        let step = detail
+            .as_deref()
+            .map(format::speakable)
+            .filter(|d| !d.is_empty() && d.len() <= 80)
+            .map(|d| format!("I'm still on this step: {}.", lower_first(d.trim_end_matches('.'))))
+            .unwrap_or_else(|| "I'm in the middle of a step.".into());
+        let ack = if format::is_stop(text) {
+            format!("{step} I'll stop when it ends. Press Escape to stop it now.")
+        } else {
+            format!("Got it. {step} I'll pass that on when it ends.")
+        };
+        self.note(i, format!("parlar: {ack}"));
+        Some(ack)
+    }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()
+    }
+}
+
+/// A tool call running longer than this holds the user's words long enough to say so.
+const LONG_STEP: Duration = Duration::from_secs(6);
+
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        // keep acronyms and names ("CI", "PR") as they are
+        Some(f) if c.clone().next().is_some_and(|n| n.is_lowercase()) => f.to_lowercase().chain(c).collect(),
+        _ => s.to_string(),
     }
 }
 
@@ -1013,7 +1076,7 @@ mod tests {
                 .await;
         }
         d.handle(set(Some("me"), None)).await;
-        d.handle(Request::Event { origin: agent.clone(), event: TurnEvent::TurnStart, tool: None }).await;
+        d.handle(Request::Event { origin: agent.clone(), event: TurnEvent::TurnStart, tool: None, detail: None }).await;
         d.handle(Request::Hear { text: "hello".into(), heard: None }).await;
         d.handle(Request::Hear { text: "and more".into(), heard: None }).await;
         match d.handle(Request::Claim { origin: me, at_stop: false }).await {
@@ -1167,5 +1230,39 @@ mod tests {
         d.handle(set(Some(false), None)).await;
         let r = d.handle(Request::Wait { origin: o, timeout_ms: 60_000, holds_turn: true }).await;
         assert_eq!(r, Response::Utterances { items: vec![], superseded: true });
+    }
+
+    #[tokio::test]
+    async fn speech_during_a_long_tool_call_is_acknowledged_once() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let o = talking_to(&d, "busy", 900).await;
+        let start = |detail: &str| Request::Event {
+            origin: o.clone(),
+            event: TurnEvent::ToolStart,
+            tool: Some("Bash".into()),
+            detail: Some(detail.into()),
+        };
+        d.handle(start("Watch CI on the PR")).await;
+        let mut st = d.state.lock().await;
+        // a fresh call is not long yet
+        assert_eq!(st.busy_ack("also run clippy"), None);
+        let back = std::time::Instant::now().checked_sub(LONG_STEP * 2).unwrap();
+        for s in st.sessions.iter_mut() {
+            if let Some(r) = s.running.as_mut() {
+                r.1 = back;
+            }
+        }
+        let ack = st.busy_ack("also run clippy").expect("acknowledged");
+        assert!(ack.contains("CI") && ack.contains("pass that on"), "{ack}");
+        assert_eq!(st.busy_ack("and the docs"), None, "once per tool call");
+        drop(st);
+        d.handle(Request::Event { origin: o.clone(), event: TurnEvent::ToolEnd, tool: None, detail: None }).await;
+        assert_eq!(d.state.lock().await.busy_ack("hello"), None, "nothing runs now");
+    }
+
+    #[test]
+    fn lower_first_keeps_acronyms() {
+        assert_eq!(lower_first("Watch CI"), "watch CI");
+        assert_eq!(lower_first("CI run"), "CI run");
     }
 }
