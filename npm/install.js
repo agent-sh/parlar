@@ -27,7 +27,7 @@ function install(fromDir) {
   for (const name of binaries) {
     const src = path.join(fromDir, name);
     if (!fs.existsSync(src)) {
-      fail(`${name} is missing from ${fromDir}`);
+      throw new Error(`${name} is missing from ${fromDir}`);
     }
     // copy then rename, so a running parlard keeps the binary it mapped
     const tmp = path.join(nativeDir, `.${name}.${process.pid}`);
@@ -104,12 +104,13 @@ async function main() {
     await download(`${base}/${asset}.tar.gz`, tarball);
     await download(`${base}/${asset}.tar.gz.sha256`, shaFile);
     const want = (fs.readFileSync(shaFile, 'utf8').match(/\b[a-fA-F0-9]{64}\b/) || [])[0];
+    // throw, not fail(): process.exit would skip the cleanup in finally
     if (!want) {
-      fail('the .sha256 file has no digest');
+      throw new Error('the .sha256 file has no digest');
     }
     const got = sha256File(tarball);
     if (got !== want.toLowerCase()) {
-      fail(`sha256 mismatch for ${asset}.tar.gz: expected ${want}, got ${got}`);
+      throw new Error(`sha256 mismatch for ${asset}.tar.gz: expected ${want}, got ${got}`);
     }
     execFileSync('tar', ['xzf', tarball, '-C', tmp], { stdio: 'inherit' });
     install(path.join(tmp, asset));
