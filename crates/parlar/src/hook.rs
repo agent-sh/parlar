@@ -144,18 +144,30 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
     Ok(0)
 }
 
+/// How long a waiter keeps trying to reach a parlard that went away (a restart takes seconds).
+const RIDE_OUT: Duration = Duration::from_secs(300);
+
 /// Background idle waiter. It is detached from the harness, so it rides out parlard restarts:
-/// on a lost connection it reconnects until its deadline instead of leaving the session deaf.
+/// on a lost connection it reconnects for `RIDE_OUT` instead of leaving the session deaf. With
+/// no parlard at the start it exits at once, so a stopped parlar leaves nothing running.
 fn wait(o: &Origin) -> Result<i32> {
     let deadline = Instant::now() + Duration::from_millis(wait_ms());
+    let mut down_since: Option<Instant> = None;
+    let mut first = true;
     loop {
         if Instant::now() >= deadline {
             return Ok(0);
         }
         let Some(mut c) = Client::connect() else {
+            let down = *down_since.get_or_insert_with(Instant::now);
+            if first || down.elapsed() >= RIDE_OUT {
+                return Ok(0);
+            }
             std::thread::sleep(Duration::from_secs(3));
             continue;
         };
+        first = false;
+        down_since = None;
         let left = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
         let req = Request::Wait { origin: o.clone(), timeout_ms: left, holds_turn: false };
         match c.call(&req, None) {

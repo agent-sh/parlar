@@ -82,7 +82,11 @@ pub fn opening(text: &str) -> String {
         sentences += 1;
     }
     if out.len() > 240 {
-        let cut = out[..240].rfind(' ').unwrap_or(240);
+        let mut end = 240;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        let cut = out[..end].rfind(' ').unwrap_or(end);
         out.truncate(cut);
         out.push_str("...");
     }
@@ -226,6 +230,9 @@ mod tests {
         assert_eq!(opening("Done. Tests pass. Next I will open a PR."), "Done. Tests pass.");
         assert_eq!(opening("## Result\n- Removed `src/app.ts` copy"), "Result. Removed app.ts copy");
         assert!(opening(&"word ".repeat(200)).len() <= 243);
+        // a multibyte character across the cut must not panic
+        assert!(opening(&format!("{}é{}", "a".repeat(239), " b".repeat(20))).len() <= 243);
+        assert!(opening(&"日本語".repeat(40)).ends_with("..."));
     }
 
     #[test]
