@@ -228,11 +228,17 @@ fn tool_name(input: &Value) -> Option<String> {
     input.get("tool_name").and_then(Value::as_str).map(str::to_string)
 }
 
-/// The agent's own words for what a tool call does: Claude Code's shell tool carries a
-/// `description`, Codex's a `justification`.
+/// What a tool call does, to name it out loud: Claude Code's shell tool carries the agent's own
+/// `description`. Codex's shell tool sends only the command, so a short plain one is named
+/// ("running cargo test"); anything longer stays unnamed rather than read out as code.
 fn tool_detail(input: &Value) -> Option<String> {
     let args = input.get("tool_input")?;
-    ["description", "justification"].iter().find_map(|k| args.get(*k).and_then(Value::as_str)).map(str::to_string)
+    if let Some(d) = ["description", "justification"].iter().find_map(|k| args.get(*k).and_then(Value::as_str)) {
+        return Some(d.to_string());
+    }
+    let cmd = args.get("command").and_then(Value::as_str)?.trim();
+    let plain = |c: char| c.is_ascii_alphanumeric() || " -_.".contains(c);
+    (!cmd.is_empty() && cmd.len() <= 32 && cmd.chars().all(plain)).then(|| format!("running {cmd}"))
 }
 
 /// Pairs a tool call's start with its end. A harness without ids gets one shared id, so any end
@@ -254,5 +260,20 @@ fn print_json(v: &Value) {
 fn print_map(m: Map<String, Value>) {
     if !m.is_empty() {
         print_json(&Value::Object(m));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_step_is_named_from_a_description_or_a_short_plain_command() {
+        let named = |v: Value| tool_detail(&json!({ "tool_input": v }));
+        assert_eq!(named(json!({ "command": "sleep 40", "description": "Wait a bit" })).as_deref(), Some("Wait a bit"));
+        assert_eq!(named(json!({ "command": "cargo test" })).as_deref(), Some("running cargo test"));
+        assert_eq!(named(json!({ "command": "rg -n foo src | head" })), None, "pipes are code");
+        assert_eq!(named(json!({ "command": "python3 -c 'print(1)'" })), None);
+        assert_eq!(named(json!({ "file_path": "a.rs" })), None);
     }
 }
