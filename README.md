@@ -60,8 +60,8 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 | Audio | PipeWire |
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
-| Indicator | GNOME Shell 50 on Linux; `parlar-overlay` on Windows. Other Linux desktops work without the floating indicator |
-| macOS (Apple silicon) | in progress: on CI it builds, fetches, speaks, recognizes, loads its launchd agent and runs the plugin paths; the mic, the speaker and Claude Code itself are untested on a real Mac, and there is no floating indicator yet |
+| Indicator | GNOME Shell 50 on Linux; `parlar-overlay` on Windows and macOS. Other Linux desktops work without the floating indicator |
+| macOS (Apple silicon) | in progress: on CI it builds, fetches, speaks, recognizes, loads its launchd agents and runs the plugin paths, and the floating indicator starts; the mic, the speaker, the indicator on a real desktop and Claude Code itself are untested on a real Mac |
 
 ## Install
 

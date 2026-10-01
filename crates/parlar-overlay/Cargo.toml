@@ -1,6 +1,6 @@
 [package]
 name = "parlar-overlay"
-description = "parlar's floating voice indicator for Windows: the swarm, above every window"
+description = "parlar's floating voice indicator for Windows and macOS: the swarm, above every window"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -27,3 +27,11 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_HiDpi",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSThread", "NSArray", "NSObject", "NSTimer", "NSDate", "NSRunLoop", "NSEnumerator"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSView", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSGraphics", "NSScreen", "NSImage", "NSImageRep", "NSColor", "NSRunningApplication", "NSCell", "objc2-core-graphics", "objc2-core-foundation"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+

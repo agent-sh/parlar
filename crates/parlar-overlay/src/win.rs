@@ -271,63 +271,7 @@ impl Overlay {
     /// Draw the swarm into a premultiplied BGRA bitmap and hand it to the layered window.
     fn paint(&self) {
         let w = self.size as usize;
-        let mut px = vec![0u8; w * w * 4];
-        let c = w as f32 / 2.0;
-        let u = w as f32 * 0.42;
-        let scale = w as f32 / 104.0;
-        // a pocket of night behind the fireflies so they read on light windows too
-        let depth = if self.swarm.mode() == Mode::Stopped { 0.18 } else { 0.42 };
-        for yy in 0..w {
-            for xx in 0..w {
-                let d = (((xx as f32 - c).powi(2) + (yy as f32 - c).powi(2)).sqrt() / c).min(1.0);
-                let a = if d < 0.7 { depth * (1.0 - 0.4 * d / 0.7) } else { depth * 0.6 * (1.0 - (d - 0.7) / 0.3) };
-                let i = (yy * w + xx) * 4;
-                px[i] = (0.09 * 255.0 * a) as u8;
-                px[i + 1] = (0.06 * 255.0 * a) as u8;
-                px[i + 2] = (0.05 * 255.0 * a) as u8;
-                px[i + 3] = (255.0 * a) as u8;
-            }
-        }
-        let muted_bar = self.muted && self.connected;
-        for p in &self.swarm.p {
-            if p.a < 0.005 {
-                continue;
-            }
-            let (fx, fy) = (c + p.x * u, c + p.y * u);
-            let col = Swarm::color(p);
-            let halo = (4.5 + p.flare * 12.0) * scale;
-            let (x0, x1) = (((fx - halo).floor() as i32).max(0), ((fx + halo).ceil() as i32).min(w as i32 - 1));
-            let (y0, y1) = (((fy - halo).floor() as i32).max(0), ((fy + halo).ceil() as i32).min(w as i32 - 1));
-            for yy in y0..=y1 {
-                for xx in x0..=x1 {
-                    let r = ((xx as f32 - fx).powi(2) + (yy as f32 - fy).powi(2)).sqrt() / halo;
-                    if r >= 1.0 {
-                        continue;
-                    }
-                    // the radial gradient: full at the center, 45% at a quarter, zero at the edge
-                    let g = if r < 0.25 { 1.0 - 0.55 * r / 0.25 } else { 0.45 * (1.0 - (r - 0.25) / 0.75) };
-                    let a = p.a * g;
-                    let i = ((yy as usize) * w + xx as usize) * 4;
-                    // additive, like the shell's ADD operator, premultiplied
-                    for (k, ch) in [2usize, 1, 0].into_iter().enumerate() {
-                        px[i + ch] = (px[i + ch] as f32 + col[k] * a).min(255.0) as u8;
-                    }
-                    px[i + 3] = (px[i + 3] as f32 + 255.0 * a * 0.6).min(255.0) as u8;
-                }
-            }
-        }
-        if muted_bar {
-            let y = (c + u * 0.86) as usize;
-            for yy in y.saturating_sub(1)..=(y + 1).min(w - 1) {
-                for xx in (c - u * 0.25) as usize..=(c + u * 0.25) as usize {
-                    let i = (yy * w + xx) * 4;
-                    px[i] = 59;
-                    px[i + 1] = 67;
-                    px[i + 2] = 191;
-                    px[i + 3] = 191;
-                }
-            }
-        }
+        let px = crate::render::render(&self.swarm, w, self.muted && self.connected);
         // SAFETY: GDI objects created and released in order; the DIB has exactly w*w*4 bytes
         unsafe {
             let screen = GetDC(std::ptr::null_mut());

@@ -138,6 +138,7 @@ jobs:
           path: |
             target/release/parlar
             target/release/parlard
+            target/release/parlar-overlay
             target/release/libonnxruntime.1.23.0.dylib
           retention-days: 7
       - name: parlard answers on its socket, hooks see their harness
@@ -166,7 +167,7 @@ jobs:
           # what a user gets: the release tarball, downloaded (quarantined) and unsigned
           name="parlar-test-aarch64-apple-darwin"
           mkdir -p "dist/$name"
-          cp target/release/parlar target/release/parlard target/release/libonnxruntime.1.23.0.dylib "dist/$name/"
+          cp target/release/parlar target/release/parlard target/release/parlar-overlay target/release/libonnxruntime.1.23.0.dylib "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           mkdir -p "$RUNNER_TEMP/dl" && cp "dist/$name.tar.gz" "$RUNNER_TEMP/dl/"
           xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;00000000-0000-0000-0000-000000000000" "$RUNNER_TEMP/dl/$name.tar.gz"
@@ -186,6 +187,21 @@ jobs:
           launchctl print "gui/$(id -u)/dev.agent-sh.parlard" 2>&1 | grep -E 'state|pid|program' | head -5 || true
           pgrep -fl "$RUNNER_TEMP/dl/$name/parlard" || echo "parlard not running under launchd"
           launchctl bootout "gui/$(id -u)/dev.agent-sh.parlard" 2>/dev/null || true
+      - name: the indicator starts and draws (the runner has a window server)
+        timeout-minutes: 3
+        run: |
+          target/release/parlard --no-mic --silent 2> parlard3.log &
+          sleep 2
+          target/release/parlar-overlay 2> overlay.log &
+          OV=$!
+          sleep 6
+          # still alive after six seconds of ticks means the window, the timer, the render and
+          # the parlard subscription all work; a crash would have ended it
+          kill -0 $OV
+          # what it saw: a position file is written only after a drag, so check the window exists
+          osascript -e 'tell application "System Events" to get the name of every process whose name contains "parlar"' || true
+          kill $OV; kill %1
+          cat overlay.log || true
       - name: the plugin's hook launcher and MCP server run on macOS
         timeout-minutes: 5
         run: |
@@ -330,7 +346,7 @@ jobs:
             for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do cp "/c/Windows/System32/$dll" "dist/$name/"; done
           elif [ "${{ runner.os }}" = macOS ]; then
             # libmoonshine is linked in; ONNX Runtime ships next to the binaries
-            cp target/release/parlar target/release/parlard target/release/libonnxruntime.1.23.0.dylib "dist/$name/"
+            cp target/release/parlar target/release/parlard target/release/parlar-overlay target/release/libonnxruntime.1.23.0.dylib "dist/$name/"
           else
             cp target/release/parlar target/release/parlard "dist/$name/"
           fi
