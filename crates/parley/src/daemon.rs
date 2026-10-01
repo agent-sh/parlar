@@ -157,8 +157,11 @@ impl State {
             && let Some(i) = self.sessions.iter().position(|s| s.session.as_deref() == Some(sid)) {
                 return Some(i);
             }
-        let h = o.harness_pid.or_else(|| if o.mcp { o.pids.first().copied() } else { None })?;
-        if o.mcp {
+        // hooks always carry a session id, so an origin without one is an MCP server (older
+        // servers do not send the mcp flag or the harness pid)
+        let mcp = o.mcp || o.session.is_none();
+        let h = o.harness_pid.or_else(|| if mcp { o.pids.first().copied() } else { None })?;
+        if mcp {
             // the MCP server matches its harness, whatever session id the harness reports
             return self.sessions.iter().position(|s| s.pid() == Some(h));
         }
