@@ -30,10 +30,9 @@ const FRAME_MS: u32 = 33;
 const CONNECTING_GRACE_S: f32 = 8.0;
 const TIMER_FRAME: usize = 1;
 const TIMER_POLL: usize = 2;
-/// Posted by the input handlers: the menu and the toggle run message loops (TrackPopupMenu,
-/// MessageBox), so they must run outside the window procedure's borrow of the overlay.
-const WM_PARLAR_MENU: u32 = WM_APP + 1;
-const WM_PARLAR_TOGGLE: u32 = WM_APP + 2;
+/// Posted after a click, so the toggle (which may show a message box) runs on its own message
+/// rather than inside the button-up handling.
+const WM_PARLAR_TOGGLE: u32 = WM_APP + 1;
 const CLASS: &str = "parlar-overlay";
 
 // menu command ids
@@ -154,13 +153,23 @@ pub fn run() -> Result<()> {
 
 /// The saved position, clamped to a monitor, else the top right of the primary one.
 fn initial_position() -> (i32, i32, i32) {
-    // SAFETY: querying monitor metrics has no preconditions
-    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    // SAFETY: querying screen metrics has no preconditions
+    let (vx, vy, vw, vh, pw) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXSCREEN),
+        )
+    };
     let dpi = unsafe { GetDpiForSystem() } as i32;
     let size = SIZE_96 * dpi / 96;
     let saved = std::fs::read_to_string(position_path()).ok().and_then(|s| serde_json::from_str::<(i32, i32)>(&s).ok());
-    let (x, y) = saved.unwrap_or((sw - size - 40, 60));
-    (x.clamp(0, (sw - size).max(0)), y.clamp(0, (sh - size).max(0)), size)
+    // the top right of the primary monitor, or the saved spot kept within the whole desktop (any
+    // monitor, including ones left of or above the primary, which have negative coordinates)
+    let (x, y) = saved.unwrap_or((pw - size - 40, 60));
+    (x.clamp(vx, (vx + vw - size).max(vx)), y.clamp(vy, (vy + vh - size).max(vy)), size)
 }
 
 fn position_path() -> std::path::PathBuf {
@@ -463,9 +472,10 @@ impl Overlay {
             CMD_TOGGLE => self.toggle(),
             CMD_MUTE => send(link::set(|s| s.mic_muted = Some(!self.muted))),
             CMD_VOICE_OFF => send(link::set(|s| s.voice_off = Some(!self.voice_off))),
+            // posted, so the window goes down after the overlay is back in its cell
             // SAFETY: a valid window handle
             CMD_QUIT => unsafe {
-                DestroyWindow(self.hwnd);
+                PostMessageW(self.hwnd, WM_CLOSE, 0, 0);
             },
             c if c >= CMD_OUTPUT => {
                 if let Some(id) = self.menu_outputs.get(c - CMD_OUTPUT).cloned() {
@@ -522,99 +532,102 @@ fn cursor() -> POINT {
     p
 }
 
+/// What an input message asks for, decided under a short borrow and done after it ends: every
+/// Win32 call here can call back into this procedure on the same thread (SetWindowPos,
+/// ReleaseCapture and DestroyWindow send messages; TrackPopupMenu and MessageBoxW run message
+/// loops), and a borrow held across one would panic.
+enum Act {
+    None,
+    Capture,
+    Move(i32, i32),
+    Release { toggle: bool, save: bool },
+    Menu,
+    Toggle,
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let handled = OVERLAY.with(|o| {
+    let act = OVERLAY.with(|o| {
         let mut o = o.borrow_mut();
-        let Some(ov) = o.as_mut() else { return false };
-        match msg {
+        let ov = o.as_mut()?;
+        Some(match msg {
             WM_TIMER => {
                 match wp {
                     TIMER_FRAME => ov.tick(),
                     TIMER_POLL => ov.poll(),
                     _ => {}
                 }
-                true
+                Act::None
             }
             WM_LBUTTONDOWN => {
                 let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                // SAFETY: valid handles
-                unsafe {
-                    GetWindowRect(hwnd, &mut r);
-                    SetCapture(hwnd);
-                }
+                // SAFETY: a valid window handle and an out pointer; GetWindowRect sends nothing
+                unsafe { GetWindowRect(hwnd, &mut r) };
                 ov.drag = Some((cursor(), POINT { x: r.left, y: r.top }, false));
-                true
+                Act::Capture
             }
-            WM_MOUSEMOVE => {
-                if let Some((from, origin, moved)) = ov.drag.as_mut() {
+            WM_MOUSEMOVE => match ov.drag.as_mut() {
+                Some((from, origin, moved)) => {
                     let c = cursor();
                     let (dx, dy) = (c.x - from.x, c.y - from.y);
                     if dx.abs() + dy.abs() > 4 {
                         *moved = true;
                     }
-                    if *moved {
-                        // SAFETY: a valid window handle
-                        unsafe {
-                            SetWindowPos(
-                                hwnd,
-                                HWND_TOPMOST,
-                                origin.x + dx,
-                                origin.y + dy,
-                                0,
-                                0,
-                                SWP_NOSIZE | SWP_NOACTIVATE,
-                            )
-                        };
-                    }
+                    if *moved { Act::Move(origin.x + dx, origin.y + dy) } else { Act::None }
                 }
-                true
-            }
-            WM_LBUTTONUP => {
-                // SAFETY: capture was taken on the press
-                unsafe { ReleaseCapture() };
-                if let Some((_, _, moved)) = ov.drag.take() {
-                    if moved {
-                        save_position(hwnd);
-                    } else {
-                        // SAFETY: a valid window handle
-                        unsafe { PostMessageW(hwnd, WM_PARLAR_TOGGLE, 0, 0) };
-                    }
-                }
-                true
-            }
-            WM_RBUTTONUP => {
-                // SAFETY: a valid window handle
-                unsafe { PostMessageW(hwnd, WM_PARLAR_MENU, 0, 0) };
-                true
-            }
+                None => Act::None,
+            },
+            WM_LBUTTONUP => match ov.drag.take() {
+                Some((_, _, moved)) => Act::Release { toggle: !moved, save: moved },
+                None => Act::None,
+            },
+            WM_RBUTTONUP => Act::Menu,
+            WM_PARLAR_TOGGLE => Act::Toggle,
             WM_DESTROY => {
-                // SAFETY: ends the message loop
+                // SAFETY: ends the message loop; posts, does not send
                 unsafe { PostQuitMessage(0) };
-                true
+                Act::None
             }
-            _ => false,
-        }
+            _ => return None,
+        })
     });
-    if handled {
-        return 0;
-    }
-    // the menu and the toggle re-enter this procedure through their own message loops, so they
-    // take the overlay out of its cell for the duration and put it back after
-    match msg {
-        WM_PARLAR_MENU | WM_PARLAR_TOGGLE => {
-            let taken = OVERLAY.with(|o| o.borrow_mut().take());
-            if let Some(mut ov) = taken {
-                if msg == WM_PARLAR_MENU {
-                    let c = cursor();
-                    ov.menu(c.x, c.y);
-                } else {
-                    ov.toggle();
-                }
-                OVERLAY.with(|o| *o.borrow_mut() = Some(ov));
-            }
-            0
-        }
+    let Some(act) = act else {
         // SAFETY: default handling for everything else
-        _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+        return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+    };
+    // SAFETY: valid handles; the overlay is not borrowed here
+    unsafe {
+        match act {
+            Act::None => {}
+            Act::Capture => {
+                SetCapture(hwnd);
+            }
+            Act::Move(x, y) => {
+                SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            Act::Release { toggle, save } => {
+                ReleaseCapture();
+                if save {
+                    save_position(hwnd);
+                }
+                if toggle {
+                    PostMessageW(hwnd, WM_PARLAR_TOGGLE, 0, 0);
+                }
+            }
+            Act::Menu | Act::Toggle => {
+                // the menu and the toggle run message loops: take the overlay out of its cell
+                // for the duration, so the re-entrant timers find nothing to borrow
+                let taken = OVERLAY.with(|o| o.borrow_mut().take());
+                if let Some(mut ov) = taken {
+                    if matches!(act, Act::Menu) {
+                        let c = cursor();
+                        ov.menu(c.x, c.y);
+                    } else {
+                        ov.toggle();
+                    }
+                    OVERLAY.with(|o| *o.borrow_mut() = Some(ov));
+                }
+            }
+        }
     }
+    0
 }
