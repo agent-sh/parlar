@@ -215,6 +215,7 @@ fn run(
     let mut peak = 0f32;
     // the turn's audio, for the recognizer, the end-of-turn model and dumps
     let mut recent = Recent::new(frames.rate as usize * 60);
+    let mut seg = Segments::default();
     // audio from just before speech started, so the first word is not clipped
     let mut preroll = Recent::new(frames.rate as usize / 2);
     let dump = std::env::var_os("PARLAR_DUMP_TURNS").map(std::path::PathBuf::from);
@@ -276,7 +277,8 @@ fn run(
                     if !in_turn {
                         in_turn = true;
                         recent.buf.clear();
-                        recent.buf.extend(preroll.buf.drain(..));
+                        seg = Segments::default();
+                        recent.push(&preroll.buf.drain(..).collect::<Vec<f32>>());
                         lines.push(line(String::new(), false));
                         changed = true;
                     } else if paused {
@@ -291,6 +293,7 @@ fn run(
                 }
                 if in_turn {
                     recent.push(&f);
+                    seg.total += f.len();
                 } else {
                     preroll.push(&f);
                 }
@@ -323,13 +326,20 @@ fn run(
         }
         if in_turn && !paused && now.duration_since(last_voice) >= PAUSE {
             paused = true;
-            let audio: Vec<f32> = recent.buf.iter().copied().collect();
+            // only the speech since the last pause: a pause is silence, so it is a clean cut, and
+            // each pause costs the same however long the turn has run
+            let audio = seg.take(&recent);
             let t0 = Instant::now();
             let text = stt.as_mut().expect("checked above").transcribe(&audio).unwrap_or_else(|e| {
                 eprintln!("recognizer: {e:#}");
                 String::new()
             });
-            eprintln!("hearing ({:.0} ms): {text}", t0.elapsed().as_secs_f32() * 1e3);
+            let text = seg.append(&text);
+            eprintln!(
+                "hearing ({:.0} ms, {:.1} s new): {text}",
+                t0.elapsed().as_secs_f32() * 1e3,
+                audio.len() as f32 / frames.rate as f32
+            );
             if let Some(l) = lines.last_mut() {
                 l.text = text;
                 l.complete = true;
@@ -392,6 +402,39 @@ fn dump_turn(dir: Option<&std::path::Path>, ev: &Heard, recent: &Recent, rate: u
 }
 
 /// The last few seconds of mic audio, for the end-of-turn model.
+/// The turn so far as text plus the audio not yet transcribed, counted in samples since the turn
+/// began so the position survives the recent buffer dropping its oldest audio.
+#[derive(Default)]
+struct Segments {
+    text: String,
+    /// Samples pushed this turn after the preroll.
+    total: usize,
+    /// `total` at the last pause.
+    start: usize,
+}
+
+impl Segments {
+    /// The audio since the last pause (or the whole turn, preroll included, at the first one).
+    fn take(&mut self, recent: &Recent) -> Vec<f32> {
+        let new = self.total - self.start;
+        let from = if self.start == 0 { 0 } else { recent.buf.len().saturating_sub(new) };
+        self.start = self.total;
+        recent.buf.iter().skip(from).copied().collect()
+    }
+
+    /// Add what the latest piece said and return the whole turn's text.
+    fn append(&mut self, piece: &str) -> String {
+        let piece = piece.trim();
+        if !piece.is_empty() {
+            if !self.text.is_empty() {
+                self.text.push(' ');
+            }
+            self.text.push_str(piece);
+        }
+        self.text.clone()
+    }
+}
+
 struct Recent {
     buf: std::collections::VecDeque<f32>,
     cap: usize,
