@@ -604,15 +604,18 @@ impl Daemon {
                 }
                 Response::Utterances { items, superseded: false }
             }
-            Request::ClaimStop { origin } => {
+            Request::ClaimStop { origin, call } => {
                 let mut st = self.state.lock().await;
                 let Some(i) = st.find_or_attach(&origin) else { return empty() };
                 let s = &mut st.sessions[i];
                 if !s.pending.iter().any(|u| format::is_stop(&u.text)) {
                     return empty();
                 }
-                // the hook denies this call, so it never runs and never ends
-                s.running.clear();
+                // the hook denies this call, so it never runs and never ends; parallel calls go on
+                match call {
+                    Some(id) => s.running.retain(|c| c.id != id),
+                    None => s.running.clear(),
+                }
                 // a stop takes everything said so far with it, so the reason reads in order
                 Response::Utterances { items: st.take(i), superseded: false }
             }
@@ -1315,12 +1318,22 @@ mod tests {
             call: Some("t1".into()),
         })
         .await;
+        d.handle(Request::Event {
+            origin: o.clone(),
+            event: TurnEvent::ToolStart,
+            tool: None,
+            detail: None,
+            call: Some("t2".into()),
+        })
+        .await;
         d.handle(Request::Hear { text: "stop".into(), heard: None }).await;
-        match d.handle(Request::ClaimStop { origin: o }).await {
+        match d.handle(Request::ClaimStop { origin: o, call: Some("t1".into()) }).await {
             Response::Utterances { items, .. } => assert_eq!(items.len(), 1),
             r => panic!("{r:?}"),
         }
-        assert!(d.state.lock().await.sessions[0].running.is_empty());
+        let st = d.state.lock().await;
+        let left: Vec<&str> = st.sessions[0].running.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(left, ["t2"], "only the denied call stops being tracked");
     }
 
     #[test]

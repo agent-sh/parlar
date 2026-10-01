@@ -84,7 +84,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             if subagent {
                 return Ok(0);
             }
-            let items = items(c.call(&Request::ClaimStop { origin: o }, quick)?);
+            let items = items(c.call(&Request::ClaimStop { origin: o, call: Some(call_id(&input)) }, quick)?);
             if !items.is_empty() {
                 let reason = format!(
                     "The user asked you to stop, so this tool call was not run.\n{}",

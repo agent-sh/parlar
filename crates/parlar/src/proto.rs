@@ -99,6 +99,9 @@ pub enum Request {
     /// Take pending utterances whose text reads as a stop request, leave the rest.
     ClaimStop {
         origin: Origin,
+        /// The tool call this hook would deny; only it stops being tracked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<String>,
     },
     /// Block until an utterance for this session is ready, or until the timeout.
     Wait {
