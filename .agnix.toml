@@ -1,0 +1,12 @@
+severity = "Warning"
+target = "Generic"
+exclude = [
+  ".git/**",
+  "target/**",
+]
+
+[rules]
+disabled_rules = [
+  "CC-HK-010", # the idle voice waiters are asyncRewake/blocking Stop hooks that wait for speech by design
+  "VER-001", # no version-dependent rules apply to this repo
+]

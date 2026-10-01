@@ -1,32 +1,72 @@
-# parlar
+<div align="center">
+  <h1>parlar</h1>
+  <p><strong>Talk to your coding agent. It talks back while it works.</strong></p>
+  <p>
+    <a href="https://github.com/agent-sh/parlar/actions/workflows/ci.yml"><img src="https://github.com/agent-sh/parlar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://crates.io/crates/parlar"><img src="https://img.shields.io/crates/v/parlar.svg" alt="crates.io"></a>
+    <a href="#license"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg" alt="License: MIT OR Apache-2.0"></a>
+  </p>
+</div>
 
-Talk to a running coding agent and hear it talk back, while the session keeps running in its own
-terminal. parlar is a plugin for Claude Code (and Codex): you speak, the agent hears you whether it
-is idle or in the middle of work, and it answers out loud in short spoken sentences while tool
-calls, diffs and logs stay on screen. The conversation is also printed in the session, so you can
-read back what was said.
+> Running open models for your company? [**Tiyuvta**](https://tiyuvta.ai/services/) helps with model choice, deployment and optimization, and fine-tuning on your hardware or cloud account.
 
-Everything runs locally on the CPU. No speech leaves your machine.
+parlar is a voice conversation mode for Claude Code and Codex. You speak, and the session hears you
+whether it is idle or in the middle of work. It answers out loud in short sentences, while tool
+calls, diffs and logs stay in the terminal as usual. The spoken exchange is printed in the session,
+so you can read back what was said.
 
-- Listening: a voice detector (Silero VAD) marks speech and pauses; noise suppression and automatic
-  gain make a laptop mic usable. Nothing transcribes while nobody talks.
-- Speech recognition: [Phonon-2](https://huggingface.co/tiyuvta/Phonon-2-ONNX) in ONNX, run at each
-  pause on the turn so far.
-- End of turn: waits through thinking pauses ("so...", "and...") using word rules plus the Smart
-  Turn audio model.
-- Voice: Kokoro-82M, streamed by sentence. Talk over it and it stops.
+Everything runs locally on the CPU. No audio and no transcript leaves your machine.
+
+## What this is
+
+- **A harness plugin, not a terminal wrapper.** It is an MCP server plus hooks. It never types into
+  your terminal, so it works with any harness in any shell, tmux or not.
+- **Real push.** Speech reaches an idle session (a background Stop hook wakes it) and a busy one (a
+  hook after each tool call hands it your words). A spoken "stop" blocks its next tool call.
+- **Explicit focus.** One session hears you at a time: the one you started with `/parlar:talk` or
+  picked from the indicator. Other sessions never get your speech.
+- **Made for thinking out loud.** It waits through "so...", "and..." and thinking pauses. When you
+  correct yourself, the last version wins. Talk over the voice and it stops.
+- **Light when idle.** `parlard` idles at about 20 MB with the mic closed. Models load when a
+  conversation starts and unload two minutes after it stops.
+
+## Features
+
+- Listening: Silero VAD marks speech and pauses after echo cancellation, noise suppression and
+  automatic gain (WebRTC AEC3 through sonora). That makes a laptop mic usable while the agent
+  speaks. Nothing is transcribed while nobody talks.
+- Recognition: Phonon-2 in ONNX, run at each pause on the turn so far. Spoken file names ("format
+  dot rs") are joined into the names of the repo you are working in.
+- End of turn: word rules plus the Smart Turn v3.2 audio model.
+- Voice: Kokoro-82M, synthesized one sentence at a time, so there are no seams inside a sentence.
 - Indicator (GNOME): a small swarm of fireflies floating above your windows. Blue is you, amber is
-  the agent, a red spark is a failed tool call.
+  the agent, and a red spark is a failed tool call. Click to stop or start. Right-click to pick the
+  session, the mic and the speaker, or to mute or turn the voice off.
+- Devices: switch input and output at run time. The choice is remembered, and a headset that drops
+  out is reopened when it comes back.
+- Token cost: the agent's spoken lines are short, and the plugin, not the agent, prints the
+  transcript.
 
-Linux only for now (x86_64 and aarch64). The floating indicator needs GNOME; everything else works
-on any desktop.
+## Support matrix
+
+| | Status |
+|---|---|
+| Linux x86_64, aarch64 | supported (prebuilt binaries and crates) |
+| Audio | PipeWire |
+| Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
+| Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
+| Indicator | GNOME Shell 50. Other desktops work without the floating indicator |
+| macOS, Windows | not supported |
 
 ## Install
 
-### From Claude Code
+All options end the same way: `parlar` and `parlard` on your PATH, the models downloaded once
+(about 800 MB) into `$XDG_DATA_HOME/parlar`, and the `parlard` user service running.
+
+### Option A: from Claude Code
 
 ```
-/plugin marketplace add avifenesh/parlar
+/plugin marketplace add agent-sh/parlar
 /plugin install parlar@parlar
 /parlar:setup
 ```
@@ -34,37 +74,62 @@ on any desktop.
 `/parlar:setup` checks your machine and installs what is missing, asking before each step that
 changes your system.
 
-### From source
+### Option B: `scripts/install.sh` from a clone
 
-Needs cargo ([rustup.rs](https://rustup.rs)), git, curl, clang and the PipeWire and ALSA headers
+Needs cargo ([rustup.rs](https://rustup.rs)), git, curl, clang, and the PipeWire and ALSA headers
 (Debian/Ubuntu `libpipewire-0.3-dev libasound2-dev`, Fedora `pipewire-devel alsa-lib-devel`, Arch
 `pipewire alsa-lib`).
 
 ```
-git clone https://github.com/avifenesh/parlar && cd parlar
+git clone https://github.com/agent-sh/parlar && cd parlar
 scripts/install.sh
-claude plugin marketplace add ~/.local/share/parlar/marketplace/claude
-claude plugin install parlar@parlar
-parlar setup claude
 ```
 
-`scripts/install.sh` builds, installs into `~/.local` (set `PREFIX` to change it), downloads
-libmoonshine and the speech models (about 800 MB, into `$XDG_DATA_HOME/parlar`), installs the GNOME indicator and
-starts the `parlard` user service. `--no-service` skips the service. `parlar setup claude` lets the
-agent speak without a permission prompt on every line.
+It builds, installs into `~/.local` (set `PREFIX` to change it), and downloads libmoonshine and the
+models. It also writes the plugins into a local marketplace, installs the GNOME indicator, and
+starts the service. `--no-service` skips the service.
 
-### From crates.io
+### Option C: `cargo install`
 
 ```
 cargo install parlar parlard
-parlard fetch
+parlard fetch      # libmoonshine and the models, once
+parlard service    # systemd user service for this parlard
 ```
 
-Then add the plugin from Claude Code as above and keep `parlard` running (a user unit is in
-`packaging/parlard.service`). The GNOME indicator is in the repo under `shell/gnome`.
+### Option D: prebuilt binaries
 
-On GNOME the indicator appears after your next login (GNOME on Wayland loads new extensions at
-login).
+Each [release](https://github.com/agent-sh/parlar/releases) has
+`parlar-<version>-<target>.tar.gz` with a `.sha256` next to it. Put `parlar` and `parlard` on your
+PATH, then run `parlard fetch` and `parlard service`.
+
+The GNOME indicator is in `shell/gnome/parlar@avifenesh`. Copy it to
+`~/.local/share/gnome-shell/extensions/` and run `gnome-extensions enable parlar@avifenesh`.
+GNOME on Wayland loads new extensions at your next login.
+
+## Wire it into your harness
+
+### Claude Code
+
+```
+claude plugin marketplace add agent-sh/parlar     # or the local one install.sh printed
+claude plugin install parlar@parlar
+parlar setup claude                               # say speaks without a permission prompt
+```
+
+Optional status line: set `statusLine.command` to `parlar status`, with `refreshInterval: 1`.
+
+### Codex
+
+```
+codex plugin marketplace add ~/.local/share/parlar/marketplace/codex
+codex plugin add parlar@parlar
+```
+
+Trust the parlar hooks once from Codex's hooks review prompt. Codex has no background wake, so a
+brand-new Codex session hears you after its first turn; after that, speaking continues the
+conversation. Start with `parlar ctl talk --session <id> --harness codex`, or from the indicator
+menu.
 
 ## Use
 
@@ -72,12 +137,9 @@ login).
 |---|---|
 | `/parlar:talk` | start talking to this session (it gets voice focus) |
 | `/parlar:stop` | stop; the mic closes |
-| `/parlar:mute`, `/parlar:mute off` | mute or unmute the mic, the conversation stays on |
+| `/parlar:mute`, `/parlar:mute off` | mute or unmute the mic; the conversation stays on |
 | click the swarm | stop or start |
-| right-click the swarm | pick the session to talk to, input and output devices, mute, voice off |
-
-Only one session hears you at a time: the one you started with `/parlar:talk` or picked under
-"Talk to". Other sessions, including busy agents, never get your speech.
+| right-click the swarm | pick the session, input and output devices, mute, voice off |
 
 While the agent works you can steer it ("also update the tests"), and "stop" or "wait" blocks its
 next tool call. When it is idle, speaking wakes it.
@@ -93,55 +155,76 @@ parlar ctl voice-off              # captions only, no audio out
 parlar status                     # one line, for a status line
 ```
 
-For the Claude Code status line, set `statusLine.command` to `parlar status` with
-`refreshInterval: 1`.
+### Headsets
 
-### Headphones
+Bluetooth headsets have two modes. High-quality playback (A2DP) turns the headset mic off, so
+parlar then needs another mic, such as the laptop's. Hands-free mode has a working mic and
+lower-quality audio, and parlar works with it. `parlar ctl input pipewire:input_default` makes the
+mic follow the system default.
 
-Bluetooth headsets have two modes. High quality playback (A2DP) turns the headset mic off, so
-parlar then needs another mic, such as the laptop's. Hands-free mode has a working mic and lower
-quality audio; parlar works in it both ways. `parlar ctl input pipewire:input_default` makes the
-mic follow whatever the system default is.
+## Models
 
-## Codex
+`parlard fetch` downloads everything once. Each file is pinned to a revision or release and checked
+by size and checksum (sha256, or CRC32C from Moonshine's manifest for Kokoro).
 
-The Codex plugin gives the same push behavior through Codex hooks:
+| Model | Role | On disk | License | Source |
+|---|---|---:|---|---|
+| Phonon-2 ONNX, int8 encoder | speech recognition | 657 MB | CC-BY-4.0 | [tiyuvta/Phonon-2-ONNX](https://huggingface.co/tiyuvta/Phonon-2-ONNX) |
+| Kokoro-82M | voice | 104 MB | Apache-2.0 | through libmoonshine |
+| Smart Turn v3.2 | end of turn | 8 MB | BSD-2-Clause | [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3) |
+| Silero VAD v6 | voice activity | 2 MB | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
+| libmoonshine v0.1.5 + ONNX Runtime 1.23 | runtime | 33 MB | MIT | [moonshine-ai/moonshine](https://github.com/moonshine-ai/moonshine) |
+
+Phonon-2 is Fermion Research's English recognizer derived from NVIDIA's Parakeet TDT 0.6B v3. We
+exported it to ONNX and publish it on Hugging Face. The int8 encoder scores 4.35% WER on LibriSpeech
+dev-clean, against 4.26% for the exact fp32 export. The model card has the details.
+
+## Resource use
+
+Measured on a Core Ultra 9 275HX laptop:
+
+| State | RAM | CPU |
+|---|---:|---|
+| idle (no conversation) | about 20 MB | none, mic closed |
+| conversation on, nobody talking | about 1.4 GB | about 2% of one core |
+| a turn ends | peak about 1.4 GB | 1 to 2 s of recognition on 4 cores |
+| speaking | | first audio in 0.3 to 0.5 s, synthesis about 2x faster than real time |
+
+Two minutes after you stop, the models and the voice unload and the memory goes back to the
+system.
+
+## Architecture
 
 ```
-codex plugin marketplace add ~/.local/share/parlar/marketplace/codex
-codex plugin add parlar@parlar
+mic -> AEC/NS/AGC -> Silero VAD -> (pause) Phonon-2 -> endpointer + Smart Turn -> utterance
+                                                                                     |
+harness <- hooks + MCP (parlar) <- unix socket <- parlard (focus, routing, voice) <--+
+   |
+   +-> say tool -> parlard -> Kokoro -> speaker (barge-in cuts it)
 ```
 
-Then trust the parlar hooks once from Codex's hooks review prompt. Codex has no background wake,
-so a brand new Codex session hears you after its first turn; after that, speaking continues the
-conversation. Start and stop with `parlar ctl talk --session <id> --harness codex` or the
-indicator menu.
+- `parlar` is the light binary: the MCP server, the hooks and `ctl`. Hooks run on every tool call,
+  so they use no async runtime, return in milliseconds, and do nothing when `parlard` is not
+  running.
+- `parlard` is the daemon. It owns the mic, the speaker, the models and which session has focus,
+  and it listens on `$XDG_RUNTIME_DIR/parlar/parlar.sock`.
+- Design notes and the decision log are in [docs/DESIGN.md](docs/DESIGN.md).
 
-## How it works
+## Privacy
 
-parlar never types into your terminal. The plugin is an MCP server plus hooks:
-
-- the agent speaks through the MCP `say` tool;
-- while it works, a hook after each tool call hands it what you said;
-- a spoken "stop" denies its next tool call;
-- when it is idle, a background Stop hook wakes it the moment you finish a sentence.
-
-`parlard` is a user service that owns the mic, the speaker, the models and which session has
-focus. The hooks and the MCP server talk to it over a unix socket in `$XDG_RUNTIME_DIR/parlar`.
-While the conversation is stopped the mic is closed. Design notes and decisions are in
-`docs/DESIGN.md`.
+Audio is processed in memory and never written to disk, unless you set `PARLAR_DUMP_TURNS` for
+debugging. Transcripts go only to the focused session, through the plugin. Nothing is sent over the
+network after `parlard fetch`.
 
 ## Troubleshooting
 
 - `journalctl --user -u parlard -f` shows what parlar hears (`hearing:`), where each utterance went
-  (`heard u3 -> /path/to/session`) and what it says.
-- Nothing is heard: check `parlar ctl state` (is it on, is a session focused), then the mic with
-  `parlar ctl devices`. A Bluetooth headset in A2DP mode has no mic.
-- Memory: parlard idles at about 20 MB. While a conversation is on it holds about 1.4 GB, mostly
-  the recognizer; two minutes after you stop it unloads the models and the voice.
+  (`heard u3`), and when models load and unload.
+- Nothing is heard: check `parlar ctl state` (is it on, and is a session focused?), then the mic
+  with `parlar ctl devices`. A Bluetooth headset in A2DP mode has no mic.
 - Your words go to the wrong session: run `/parlar:talk` in the session you want.
-- `parlard fetch` downloads missing models again; `parlard speak "hello"` writes a test line to
-  `parlar-speak.wav`; `parlard final file.wav` runs a recording through the recognizer.
+- `parlard fetch` downloads missing files again. `parlard speak "hello"` writes a test line to
+  `parlar-speak.wav`, and `parlard final file.wav` runs a recording through the recognizer.
 
 ## Uninstall
 
@@ -153,19 +236,30 @@ rm -rf ~/.local/bin/parlar ~/.local/bin/parlard ~/.local/share/parlar \
        ~/.local/share/gnome-shell/extensions/parlar@avifenesh
 ```
 
-## Develop
+## Related
 
-```
-cargo build --release && cargo test --release
-target/release/parlard --silent --input-wav clip.wav     # the pipeline on a recording
-PARLAR_BIN=target/release/parlar claude --plugin-dir plugin/claude
-```
+- [computer-use-linux](https://github.com/agent-sh/computer-use-linux): Linux desktop control over
+  MCP.
+- [agent-workspace-linux](https://github.com/agent-sh/agent-workspace-linux): isolated desktops for
+  agents.
 
-Conventions are in `AGENTS.md`.
+## Contributing
 
-## Licenses
+See [CONTRIBUTING.md](CONTRIBUTING.md). Conventions for agents working on this repo are in
+[AGENTS.md](AGENTS.md).
 
-parlar is MIT or Apache-2.0, at your option. It downloads and uses: Phonon-2 ONNX (CC-BY-4.0;
-Parakeet TDT 0.6B v3 by NVIDIA, Phonon-2 by Fermion Research, ONNX conversion by Tiyuvta), libmoonshine
-(MIT) for Kokoro-82M (Apache-2.0), Smart Turn v3.2 (BSD-2-Clause) and Silero VAD (MIT), and links
-sonora (BSD-3-Clause) and ONNX Runtime (MIT).
+## Credits
+
+- Phonon-2 by [Fermion Research](https://huggingface.co/FermionResearch/Phonon-2), from NVIDIA's
+  Parakeet TDT 0.6B v3. ONNX conversion by [Tiyuvta](https://huggingface.co/tiyuvta).
+- [Moonshine](https://github.com/moonshine-ai/moonshine) for libmoonshine and its Kokoro pipeline.
+- [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M),
+  [Smart Turn](https://github.com/pipecat-ai/smart-turn) by Pipecat, and
+  [Silero VAD](https://github.com/snakers4/silero-vad).
+- [sonora](https://crates.io/crates/sonora), a Rust port of the WebRTC audio processing module.
+
+## License
+
+parlar is MIT or Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT),
+[LICENSE-APACHE](LICENSE-APACHE)). The models and libraries it downloads keep their own licenses,
+listed under [Models](#models). It links sonora (BSD-3-Clause) and loads ONNX Runtime (MIT).

@@ -32,7 +32,7 @@ impl Features {
         Features { fft, window, mel: mel_filters() }
     }
 
-    /// Log-mel features for the last 8 s of `audio` (16 kHz), row-major [80][800].
+    /// Log-mel features for the last 8 s of `audio` (16 kHz), row-major `[80][800]`.
     pub fn compute(&self, audio: &[f32]) -> Vec<f32> {
         let audio = &audio[audio.len().saturating_sub(SECS * RATE)..];
         let n = audio.len();

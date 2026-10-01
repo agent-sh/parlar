@@ -62,6 +62,8 @@ enum Cmd {
     },
     /// List audio devices.
     Devices,
+    /// Install and start the systemd user service that runs this parlard.
+    Service,
     /// Write a WAV through the capture cleanup (noise suppression, gain), for inspection.
     Clean { wav: std::path::PathBuf, out: std::path::PathBuf },
     /// Transcribe a WAV with the recognizer (Phonon-2, ONNX).
@@ -136,6 +138,7 @@ fn main() -> Result<()> {
             wav::write(&out, &y, aec::RATE)?;
             return Ok(());
         }
+        Some(Cmd::Service) => return service(),
         Some(Cmd::Devices) => {
             let (ins, outs) = audio::list()?;
             println!("input:");
@@ -351,5 +354,36 @@ fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Res
         rate,
         out.display()
     );
+    Ok(())
+}
+
+/// Write `parlard.service` for the current user, pointing at this binary, and (re)start it.
+fn service() -> Result<()> {
+    use anyhow::{Context, bail};
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .context("neither XDG_CONFIG_HOME nor HOME is set")?;
+    let unit = config.join("systemd/user/parlard.service");
+    std::fs::create_dir_all(unit.parent().unwrap())?;
+    std::fs::write(
+        &unit,
+        format!(
+            "[Unit]\nDescription=parlar voice conversation daemon\nAfter=pipewire.service\n\n\
+             [Service]\nExecStart={}\nRestart=on-failure\nRestartSec=3\nNice=5\n\n\
+             [Install]\nWantedBy=default.target\n",
+            exe.display()
+        ),
+    )?;
+    // restart, so a reinstall runs the new binary
+    for args in [&["daemon-reload"][..], &["enable", "parlard.service"], &["restart", "parlard.service"]] {
+        let ok = std::process::Command::new("systemctl").arg("--user").args(args).status().context("run systemctl")?;
+        if !ok.success() {
+            bail!("systemctl --user {} failed", args.join(" "));
+        }
+    }
+    println!("{} runs {}", unit.display(), exe.display());
     Ok(())
 }

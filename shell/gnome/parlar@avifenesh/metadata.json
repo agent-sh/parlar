@@ -3,5 +3,5 @@
   "name": "parlar",
   "description": "Floating voice indicator for parlar conversations with coding agents. Click to stop or start, hover to mute, right-click for devices.",
   "shell-version": ["50"],
-  "url": "https://github.com/avifenesh/parlar"
+  "url": "https://github.com/agent-sh/parlar"
 }

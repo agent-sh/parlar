@@ -22,7 +22,6 @@ done
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PREFIX=${PREFIX:-$HOME/.local}
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}
-CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
 BIN=$PREFIX/bin
 MARKET=$DATA/parlar/marketplace
 
@@ -72,13 +71,7 @@ if command -v gnome-shell >/dev/null 2>&1; then
 fi
 
 if [ "$SERVICE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
-    UNIT=$CONFIG/systemd/user/parlard.service
-    mkdir -p "$(dirname "$UNIT")"
-    sed "s|@BINDIR@|$BIN|" "$ROOT/packaging/parlard.service" > "$UNIT"
-    systemctl --user daemon-reload
-    systemctl --user enable parlard.service
-    # restart, so a reinstall runs the new binary
-    systemctl --user restart parlard.service
+    "$BIN/parlard" service
 fi
 
 cat <<MSG
