@@ -16,12 +16,14 @@ pub fn socket_path() -> PathBuf {
     transport::endpoint()
 }
 
-/// One connection to parlard. Replies are read on a thread of their own and handed over through
-/// a channel, so every call can wait with a timeout on any platform (Windows pipes have no read
-/// timeout). A call that times out leaves the connection unusable: its late reply would otherwise
-/// answer the next call.
+/// One connection to parlard. All I/O on it happens on one thread of the client's: a request is
+/// handed over, written, and its reply read there, so a call can wait with a timeout on any
+/// platform (Windows pipes have no read timeout), and a read and a write never overlap (a pipe
+/// opened for synchronous I/O runs them one at a time, so a pending read would block the next
+/// write forever). A call that times out leaves the connection unusable: its late reply would
+/// otherwise answer the next call.
 pub struct Client {
-    wr: Conn,
+    tx: mpsc::Sender<Option<Vec<u8>>>,
     rx: mpsc::Receiver<std::io::Result<String>>,
     broken: bool,
 }
@@ -33,11 +35,25 @@ impl Client {
     }
 
     pub fn from_stream(s: Conn) -> Result<Client> {
-        let rd = transport::try_clone(&s)?;
+        let (req_tx, req_rx) = mpsc::channel::<Option<Vec<u8>>>();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new().name("parlar-client".into()).spawn(move || {
-            let mut rd = BufReader::new(rd);
-            loop {
+            let mut wr = match transport::try_clone(&s) {
+                Ok(w) => w,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            let mut rd = BufReader::new(s);
+            // Some(bytes): write a request, then read its reply. None: read one more line.
+            while let Ok(req) = req_rx.recv() {
+                if let Some(bytes) = req
+                    && let Err(e) = wr.write_all(&bytes)
+                {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
                 let mut line = String::new();
                 let r = match rd.read_line(&mut line) {
                     Ok(0) => {
@@ -52,19 +68,20 @@ impl Client {
                 }
             }
         })?;
-        Ok(Client { wr: s, rx, broken: false })
+        Ok(Client { tx: req_tx, rx, broken: false })
     }
 
     pub fn call(&mut self, req: &Request, timeout: Option<Duration>) -> Result<Response> {
         anyhow::ensure!(!self.broken, "connection to parlard timed out earlier");
         let mut line = serde_json::to_vec(req)?;
         line.push(b'\n');
-        self.wr.write_all(&line)?;
+        self.tx.send(Some(line)).ok().context("parlard connection closed")?;
         let buf = self.recv(timeout)?;
         Ok(serde_json::from_str(&buf)?)
     }
 
     pub fn read_line(&mut self) -> Result<String> {
+        self.tx.send(None).ok().context("parlard connection closed")?;
         self.recv(None)
     }
 

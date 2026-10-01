@@ -525,7 +525,8 @@ impl Daemon {
         // removed when serving ends, and only by the daemon that bound it: a second parlard that
         // finds this one running must leave its socket alone
         let _unlink = Unlink(path.to_path_buf());
-        eprintln!("parlard listening on {}", path.display());
+        // the path holds the uid, which code scanning treats as private; ctl state shows it
+        eprintln!("parlard listening");
         let state = self.state.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(1));

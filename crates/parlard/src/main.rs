@@ -489,8 +489,9 @@ fn service() -> Result<()> {
     if !ok {
         bail!("could not add parlard to {key}");
     }
-    // a reinstall replaces the running one
-    let _ = std::process::Command::new("taskkill").args(["/IM", "parlard.exe", "/F"]).output();
+    // a reinstall replaces the running one, but never this process (`parlar service` runs us)
+    let me = format!("PID ne {}", std::process::id());
+    let _ = std::process::Command::new("taskkill").args(["/F", "/FI", "IMAGENAME eq parlard.exe", "/FI", &me]).output();
     detach()?;
     println!("parlard starts at login ({key}\\parlard) and is running; log: {}", log_path().display());
     Ok(())

@@ -64,6 +64,8 @@ jobs:
       - run: cargo test --locked --release
       - name: parlard answers on its named pipe
         shell: pwsh
+        # a hung pipe must fail fast, not stall the job
+        timeout-minutes: 3
         run: |
           $d = Start-Process -FilePath target\release\parlard.exe -ArgumentList '--no-mic','--silent' -PassThru -RedirectStandardError parlard.log
           Start-Sleep -Seconds 3
