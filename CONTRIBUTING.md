@@ -39,7 +39,9 @@ without parlard, and message passing stays inside the plugin.
   routing issues.
 - Update `README.md` when a user-facing command changes, and `docs/DESIGN.md` when a design
   decision changes.
-- A release bumps the version in `Cargo.toml` and both plugin manifests; CI checks they match.
+- A release bumps the version in `Cargo.toml`, `package.json` and both plugin manifests; CI checks
+  they match. Pushing the `v<version>` tag builds the release binaries and publishes the crates
+  and the npm package.
 - Use conventional commit prefixes when practical (`fix:`, `feat:`, `docs:`, `chore:`).
 
 ## Security

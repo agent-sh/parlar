@@ -6,6 +6,7 @@
 - Speech that arrives during a long tool call gets an answer from parlar itself, once per call:
   it names the step (from the agent's own description) and says your words go through when the
   step ends. A spoken "stop" is told to press Escape to stop the step now.
+- npm package `@agent-sh/parlar`: installs the release binaries for your machine, sha256 checked.
 
 ## [0.1.1] - 2026-10-01
 
