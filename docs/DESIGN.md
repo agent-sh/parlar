@@ -267,3 +267,8 @@ Claude Code statusLine (`refreshInterval: 1`).
 - D15: voice focus moves only by choice (/parlar:talk, the indicator menu); following prompts sent
   speech to busy agent sessions.
 - D16: the plugin prints the spoken exchange as a hook systemMessage, at no model token cost.
+- D17 (2026-10-01): no harness lets a hook into a running tool call, so speech during a long call
+  waits for it to end. parlard says so itself, once per call, instead of forcing tools into the
+  background: the owner ruled out changing how the model runs ("wait on it is cheaper than
+  fetching repeatedly").
+

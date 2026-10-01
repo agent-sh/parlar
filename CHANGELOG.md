@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Speech that arrives during a long tool call gets an answer from parlar itself, once per call:
+  it names the step (from the agent's own description) and says your words go through when the
+  step ends. A spoken "stop" is told to press Escape to stop the step now.
+
 ## [0.1.1] - 2026-10-01
 
 ### Changed
