@@ -893,7 +893,8 @@ impl State {
         self.mic_gate.store(self.active && !self.mic_muted, Ordering::SeqCst);
     }
     pub fn set_cut(&mut self, cut: String) {
-        self.cut = Some(cut);
+        // nothing was heard yet when the user cut in: there is nothing to report
+        self.cut = Some(cut).filter(|c| !c.trim().is_empty());
     }
     pub fn deliver_spoken(&mut self, text: String, heard: Option<String>) -> Option<UtteranceId> {
         if !self.active || self.mic_muted {
