@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.2] - 2026-10-01
 
 ### Fixed
 - Codex: a parlard restart no longer ends a turn held open for voice; the Stop waiter reconnects
@@ -16,6 +16,10 @@
   it names the step (from the agent's own description) and says your words go through when the
   step ends. A spoken "stop" is told to press Escape to stop the step now.
 - npm package `@agent-sh/parlar`: installs the release binaries for your machine, sha256 checked.
+
+### Fixed
+- After a parlard restart, a session gets its folder and harness back from the next hook, not only
+  from the next typed prompt, so voice-only sessions keep the repo vocabulary.
 
 ## [0.1.1] - 2026-10-01
 
