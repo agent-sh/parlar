@@ -61,7 +61,7 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
 | Indicator | GNOME Shell 50 on Linux; `parlar-overlay` on Windows. Other Linux desktops work without the floating indicator |
-| macOS (Apple silicon) | in progress: builds, tests and runs headless on CI; the mic, speaker, launchd start and plugin flow are untested on a real Mac, and there is no floating indicator yet |
+| macOS (Apple silicon) | in progress: on CI it builds, fetches, speaks, recognizes, loads its launchd agent and runs the plugin paths; the mic, the speaker and Claude Code itself are untested on a real Mac, and there is no floating indicator yet |
 
 ## Install
 
@@ -131,6 +131,18 @@ PATH, then run `parlard fetch` and `parlard service`.
 The GNOME indicator is in `shell/gnome/parlar@avifenesh`. Copy it to
 `~/.local/share/gnome-shell/extensions/` and run `gnome-extensions enable parlar@avifenesh`.
 GNOME on Wayland loads new extensions at your next login.
+
+On macOS the binaries are not notarized, so a downloaded tarball carries Apple's quarantine mark:
+they run from a terminal, but Gatekeeper refuses a double-click and `spctl` reports them as
+rejected. To clear the mark after unpacking:
+
+```
+xattr -dr com.apple.quarantine parlar-*-aarch64-apple-darwin
+```
+
+`parlard fetch` then downloads the models and links ONNX Runtime beside the binaries, and
+`parlard service` installs the launchd agent.
+
 
 ## Wire it into your harness
 

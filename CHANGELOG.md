@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- README: what Gatekeeper does with the unsigned macOS tarball, and how to clear the quarantine
+  mark. CI now checks that a quarantined tarball runs, that the launchd agent loads, and that the
+  plugin's launcher and MCP server work on macOS.
+
 ## [0.1.7] - 2026-10-01
 
 ### Added
