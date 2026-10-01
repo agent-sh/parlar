@@ -1,5 +1,6 @@
 mod aec;
 mod audio;
+mod config;
 mod listen;
 mod models;
 mod speak;
@@ -36,8 +37,9 @@ struct Cli {
     /// Output device (substring of its name, or its id).
     #[arg(long)]
     output: Option<String>,
-    #[arg(long, default_value = "kokoro_af_heart")]
-    voice: String,
+    /// The voice (default: [voice] name in config.toml, else kokoro_af_heart for English).
+    #[arg(long)]
+    voice: Option<String>,
     /// Turn off echo cancellation (use with headphones, or to compare).
     #[arg(long)]
     no_aec: bool,
@@ -57,9 +59,11 @@ struct Cli {
 enum Cmd {
     /// Download the speech models.
     Fetch {
-        #[arg(long, default_value = "kokoro_af_heart")]
-        voice: String,
+        #[arg(long)]
+        voice: Option<String>,
     },
+    /// Print the settings in use and where they come from.
+    Config,
     /// List audio devices.
     Devices,
     /// Install and start the systemd user service that runs this parlard.
@@ -87,8 +91,8 @@ enum Cmd {
         text: String,
         #[arg(long, default_value = "parlar-speak.wav")]
         out: std::path::PathBuf,
-        #[arg(long, default_value = "kokoro_af_heart")]
-        voice: String,
+        #[arg(long)]
+        voice: Option<String>,
         /// One synthesis call per sentence instead of streamed chunks.
         #[arg(long)]
         sentences: bool,
@@ -97,9 +101,29 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cfg = config::load()?;
     match cli.cmd {
-        Some(Cmd::Fetch { voice }) => return models::fetch(&voice),
-        Some(Cmd::Speak { text, out, voice, sentences }) => return speak(&text, &out, &voice, sentences),
+        Some(Cmd::Fetch { voice }) => return models::fetch(&voice_name(voice)),
+        Some(Cmd::Config) => {
+            let l = cfg.language();
+            println!(
+                "config file: {}{}",
+                config::path().display(),
+                if config::path().exists() { "" } else { " (not present, defaults)" }
+            );
+            println!("language:    {}", l.code);
+            println!("recognizer:  {} ({})", cfg.recognizer(), models::final_dir().display());
+            match cfg.voice.command.is_empty() {
+                true => println!(
+                    "voice:       {} ({})",
+                    voice_name(None).if_empty("libmoonshine's default"),
+                    l.tts.unwrap_or("-")
+                ),
+                false => println!("voice:       command {:?}", cfg.voice.command),
+            }
+            return Ok(());
+        }
+        Some(Cmd::Speak { text, out, voice, sentences }) => return speak(&text, &out, &voice_name(voice), sentences),
         Some(Cmd::Final { wav, model, threads }) => {
             let dir = model.unwrap_or_else(models::final_dir);
             let t0 = std::time::Instant::now();
@@ -159,8 +183,9 @@ async fn serve(cli: Cli) -> Result<()> {
 
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kokoro = None;
-    let engine = if !cli.voice_cmd.is_empty() {
-        voice::Engine::Command(cli.voice_cmd.clone())
+    let voice_cmd = if cli.voice_cmd.is_empty() { config::get().voice.command.clone() } else { cli.voice_cmd.clone() };
+    let engine = if !voice_cmd.is_empty() {
+        voice::Engine::Command(voice_cmd)
     } else if cli.silent {
         voice::Engine::Silent
     } else {
@@ -174,7 +199,7 @@ async fn serve(cli: Cli) -> Result<()> {
         // load the library now, so a missing install shows at start; the voice itself loads with
         // the first conversation
         models::moonshine()?;
-        let k = speak::Kokoro::new(&cli.voice, player.clone(), active.clone());
+        let k = speak::Kokoro::new(&voice_name(cli.voice.clone()), player.clone(), active.clone());
         kokoro = Some((k.clone(), player));
         voice::Engine::Speaker(k)
     };
@@ -315,12 +340,13 @@ fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Res
     use std::time::Instant;
     models::moonshine()?;
     let t0 = Instant::now();
-    let tts = Tts::load(&models::tts_dir(), "en_us", voice, &[])?;
+    let lang = speak::tts_language();
+    let tts = Tts::load(&models::tts_dir(), lang, voice, &[])?;
     let load = t0.elapsed();
     let t1 = Instant::now();
     if sentences {
         let (mut pcm, mut rate, mut first) = (Vec::new(), 24000, None);
-        for s in parlar_moonshine::split_utterances("en_us", text)? {
+        for s in parlar_moonshine::split_utterances(lang, text)? {
             let (p, r) = tts.synthesize(&s)?;
             first.get_or_insert(t1.elapsed());
             rate = r;
@@ -397,4 +423,28 @@ fn service() -> Result<()> {
     }
     println!("{} runs {}", unit.display(), exe.display());
     Ok(())
+}
+
+/// The voice to use: the flag, else config.toml, else af_heart for US English and the voice
+/// libmoonshine's manifest lists for any other language.
+fn voice_name(flag: Option<String>) -> String {
+    let cfg = config::get();
+    flag.or_else(|| cfg.voice.name.clone()).unwrap_or_else(|| {
+        if cfg.language().code == "en" {
+            return "kokoro_af_heart".into();
+        }
+        // libmoonshine needs a voice; take the one its manifest lists for the language
+        let _ = models::moonshine();
+        cfg.language().tts.and_then(models::default_voice).unwrap_or_default()
+    })
+}
+
+trait IfEmpty {
+    fn if_empty(self, other: &str) -> String;
+}
+
+impl IfEmpty for String {
+    fn if_empty(self, other: &str) -> String {
+        if self.is_empty() { other.to_string() } else { self }
+    }
 }

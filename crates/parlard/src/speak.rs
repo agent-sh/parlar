@@ -84,11 +84,16 @@ impl Kokoro {
         if t.is_none() {
             let t0 = Instant::now();
             models::moonshine()?;
-            *t = Some(Tts::load(&models::tts_dir(), "en_us", &self.voice, &[])?);
+            *t = Some(Tts::load(&models::tts_dir(), tts_language(), &self.voice, &[])?);
             eprintln!("voice loaded in {:.0} ms", t0.elapsed().as_secs_f32() * 1e3);
         }
         Ok(t)
     }
+}
+
+/// libmoonshine's name for the configured language.
+pub fn tts_language() -> &'static str {
+    crate::config::get().language().tts.unwrap_or("en_us")
 }
 
 struct Playing<'a>(&'a Kokoro);
@@ -124,7 +129,8 @@ impl Speaker for Kokoro {
         self.echo.start(text);
         self.playing.store(true, Ordering::SeqCst);
         let _playing = Playing(self);
-        let sentences = parlar_moonshine::split_utterances("en_us", text).unwrap_or_else(|_| vec![text.to_string()]);
+        let sentences =
+            parlar_moonshine::split_utterances(tts_language(), text).unwrap_or_else(|_| vec![text.to_string()]);
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel::<(String, Vec<f32>, u32)>();
         let (tts_ref, sentences_ref, stop_ref) = (tts, &sentences, &stop);

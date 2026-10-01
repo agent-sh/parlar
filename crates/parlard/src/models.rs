@@ -42,15 +42,14 @@ pub fn vad_model() -> PathBuf {
     root().join("vad").join(VAD_FILE)
 }
 
-/// The speech recognizer: Phonon-2, or Parakeet TDT 0.6B v3 (the same layout) if only that is
-/// installed.
+/// The speech recognizer's directory: a built-in model under the models root, or a directory
+/// named in config.toml.
 pub fn final_dir() -> PathBuf {
-    let stt = root().join("stt");
-    ["phonon-2", "parakeet-tdt-0.6b-v3"]
-        .iter()
-        .map(|n| stt.join(n))
-        .find(|d| d.join("vocab.txt").exists())
-        .unwrap_or_else(|| stt.join("phonon-2"))
+    let model = crate::config::get().recognizer();
+    match model.as_str() {
+        crate::config::PHONON | crate::config::PARAKEET => root().join("stt").join(model),
+        dir => PathBuf::from(dir),
+    }
 }
 
 pub fn turn_model() -> PathBuf {
@@ -253,20 +252,56 @@ const PHONON_FILES: &[(&str, u64, &str)] = &[
     ("config.json", 121, "db59e29a3c1fde6a081bf04965e72bba26cd65be1aee65b064360df8aef468e5"),
 ];
 
+/// Parakeet TDT 0.6B v3 in ONNX (istupakov/parakeet-tdt-0.6b-v3-onnx, 25 European languages),
+/// pinned to one revision. Its NeMo front end is the one Phonon-2 ships, from that pinned repo.
+const PARAKEET_REPO: &str =
+    "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
+const PARAKEET_FILES: &[(&str, u64, &str)] = &[
+    ("encoder-model.int8.onnx", 652_183_999, "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"),
+    ("decoder_joint-model.int8.onnx", 18_202_004, "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"),
+    ("vocab.txt", 93_939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+    ("config.json", 97, "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"),
+];
+
+fn pinned(repo: &str, files: &[(&str, u64, &str)]) -> Manifest {
+    let files = files
+        .iter()
+        .map(|(n, size, sha)| File { sha256: Some((*sha).into()), ..File::new(n, &format!("{repo}/{n}"), *size) })
+        .collect();
+    Manifest { groups: vec![Group { files }] }
+}
+
+/// libmoonshine's default voice for a language, read from its download manifest: a Kokoro voice
+/// file `kokoro/voices/<v>.kokorovoice` is the voice `kokoro_<v>`.
+pub fn default_voice(lang: &str) -> Option<String> {
+    let m: Manifest = serde_json::from_str(&parlar_moonshine::tts_manifest(lang, &[]).ok()?).ok()?;
+    m.groups.iter().flat_map(|g| &g.files).find_map(|f| {
+        let v = f.name.strip_prefix("kokoro/voices/")?.strip_suffix(".kokorovoice")?;
+        Some(format!("kokoro_{v}"))
+    })
+}
+
 pub fn fetch(voice: &str) -> Result<()> {
     fetch_moonshine()?;
     moonshine()?;
-    let stt = root().join("stt/phonon-2");
-    let files = PHONON_FILES
-        .iter()
-        .map(|(n, size, sha)| File {
-            sha256: Some((*sha).into()),
-            ..File::new(n, &format!("{PHONON_REPO}/{n}"), *size)
-        })
-        .collect();
-    download(&Manifest { groups: vec![Group { files }] }, &stt)?;
-    let tts = parlar_moonshine::tts_manifest("en", &[("voice", voice)])?;
-    download(&serde_json::from_str(&tts)?, &tts_dir())?;
+    let cfg = crate::config::get();
+    let stt = final_dir();
+    match cfg.recognizer().as_str() {
+        crate::config::PHONON => download(&pinned(PHONON_REPO, PHONON_FILES), &stt)?,
+        crate::config::PARAKEET => {
+            download(&pinned(PARAKEET_REPO, PARAKEET_FILES), &stt)?;
+            let pre: Vec<_> =
+                PHONON_FILES.iter().filter(|(n, _, _)| *n == "preprocessor-model.onnx").copied().collect();
+            download(&pinned(PHONON_REPO, &pre), &stt)?;
+        }
+        dir => eprintln!("recognizer: using the model in {dir}"),
+    }
+    if cfg.voice.command.is_empty() {
+        let lang = cfg.language().tts.unwrap_or("en_us");
+        let opts: Vec<(&str, &str)> = if voice.is_empty() { vec![] } else { vec![("voice", voice)] };
+        let tts = parlar_moonshine::tts_manifest(lang, &opts).with_context(|| format!("voice files for {lang}"))?;
+        download(&serde_json::from_str(&tts)?, &tts_dir())?;
+    }
     let turn = Manifest {
         groups: vec![Group {
             files: vec![File { sha256: Some(TURN_SHA256.into()), ..File::new(TURN_FILE, TURN_URL, TURN_SIZE) }],
