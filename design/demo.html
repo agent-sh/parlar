@@ -1,0 +1,225 @@
+<!doctype html>
+<!-- Staged parlar demo for the README GIF: a Claude Code session and the swarm indicator, driven
+     by a fixed script. A recorder steps window.frame(t) with ?record and captures each frame.
+     Open it in a browser to watch it play. The quoted text under the swarm narrates what the person
+     says; the real indicator shows only the swarm. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --w: 960px; --h: 540px; }
+  html, body { margin: 0; background: #0b0d12; }
+  #stage {
+    position: relative; width: var(--w); height: var(--h); overflow: hidden;
+    background: radial-gradient(1200px 700px at 20% 0%, #1b2233 0%, #10131b 55%, #0b0d12 100%);
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  }
+  .term {
+    position: absolute; left: 36px; top: 34px; width: 700px; height: 472px;
+    background: #14161c; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px #262a35;
+    overflow: hidden;
+  }
+  .bar { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #1b1e26; color: #8a90a0; font-size: 12px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .bar .title { margin-left: 10px; }
+  .body { padding: 14px 18px; font-size: 13.5px; line-height: 1.55; color: #d7dae2; }
+  .line { white-space: pre; }
+  .dim { color: #6f7685; }
+  .you { color: #8fd8ff; }
+  .agent { color: #ffbf69; }
+  .tool { color: #e7e9ee; }
+  .tool b { color: #b3e88a; font-weight: 600; }
+  .out { color: #8a90a0; }
+  .bad { color: #ff6b5f; }
+  .good { color: #8ee08a; }
+  .add { color: #8ee08a; }
+  .del { color: #ff8a80; }
+  .think { color: #c792ea; }
+  .prompt {
+    position: absolute; left: 18px; right: 18px; bottom: 16px; height: 34px; border: 1px solid #2c313d;
+    border-radius: 8px; color: #6f7685; font-size: 13px; display: flex; align-items: center; padding: 0 12px;
+  }
+  .status { position: absolute; left: 20px; bottom: 56px; font-size: 12px; color: #6f7685; }
+  #swarm { position: absolute; left: 600px; top: 46px; width: 170px; height: 170px; }
+  .tag {
+    position: absolute; left: 760px; top: 250px; width: 170px; text-align: center; font-size: 12px;
+    color: #8a90a0; letter-spacing: .04em;
+  }
+  .mic {
+    position: absolute; left: 560px; top: 226px; font-style: italic; width: 250px; text-align: center; font-size: 13px;
+    color: #8fd8ff; min-height: 60px; line-height: 1.45; font-family: "Inter", "DejaVu Sans", sans-serif;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="term">
+    <div class="bar">
+      <span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+      <span class="title">claude · ~/projects/app</span>
+    </div>
+    <div class="body" id="log"></div>
+    <div class="status" id="status"></div>
+    <div class="prompt">&gt; </div>
+  </div>
+  <canvas id="swarm" width="340" height="340"></canvas>
+  <div class="mic" id="mic"></div>
+</div>
+<script>
+// ---- the swarm, ported from shell/gnome/parlar@avifenesh/swarm.js (same motion model) ----
+const YOU = [143, 216, 255], AGENT = [255, 191, 105], NEUTRAL = [246, 234, 208], ERR = [255, 90, 79], WHITE = [255, 255, 255];
+const N = 40;
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const lerp = (a, b, k) => a + (b - a) * k;
+const mix = (a, b, k) => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
+const P = [];
+for (let i = 0; i < N; i++) {
+  const a = hash(i * 3.7) * Math.PI * 2;
+  P.push({ x: Math.cos(a) * 1.4, y: Math.sin(a) * 1.4, ph: hash(i * 1.9) * Math.PI * 2, r: hash(i * 9.1), flare: 0, err: false, a: 0, col: NEUTRAL.slice() });
+}
+let mode = 'connecting', modeSince = 0;
+function cluster(p, t, lv) {
+  const a = p.ph + t * 0.6, rr = 0.2 + 0.12 * p.r + lv * 0.5 * (0.5 + 0.5 * Math.sin(p.ph * 5 + t * 9));
+  return [Math.cos(a) * rr, Math.sin(a) * rr];
+}
+function line(i, t, al, n) {
+  const x = -0.85 + 1.7 * i / (n - 1);
+  return [x, Math.sin(x * 6 - t * 7) * al * 0.5 * (1 - Math.abs(x) * 0.5)];
+}
+function step(dt, t, lv, al) {
+  const s = t - modeSince;
+  for (let i = 0; i < N; i++) {
+    const p = P[i];
+    let tgt, k = 4, jit = 0.04, alpha = 0.85, col = NEUTRAL;
+    if (mode === 'idle') {
+      const a = p.ph + t * 0.12, rr = 0.5 + 0.18 * Math.sin(p.ph * 3 + t * 0.4);
+      tgt = [Math.cos(a) * rr, Math.sin(a) * rr * 0.9]; k = 1.5; jit = 0.06; alpha = 0.7;
+    } else if (mode === 'connecting') {
+      const on = s > i * 0.035, a = p.ph + t * 0.12;
+      tgt = on ? [Math.cos(a) * 0.55, Math.sin(a) * 0.5] : [Math.cos(p.ph) * 1.4, Math.sin(p.ph) * 1.4]; k = 3; alpha = on ? 0.8 : 0;
+    } else if (mode === 'listening') {
+      tgt = cluster(p, t, lv); k = 9; jit = 0.02 + lv * 0.12; col = YOU; alpha = 0.95;
+    } else if (mode === 'thinking') {
+      const a = i / N * Math.PI * 2 + t * 2.2, rr = 0.36 + 0.04 * Math.sin(t * 3 + i);
+      tgt = [Math.cos(a) * rr, Math.sin(a) * rr]; k = 10; jit = 0.005;
+    } else if (mode === 'speaking') {
+      tgt = line(i, t, al, N); k = 14; jit = 0.005; col = AGENT; alpha = 0.95;
+    }
+    const kk = Math.min(1, dt * k);
+    // deterministic jitter (the shell uses the same sines)
+    p.x = lerp(p.x, tgt[0], kk) + Math.sin(t * 3.1 + p.ph * 7) * jit * dt * 30;
+    p.y = lerp(p.y, tgt[1], kk) + Math.cos(t * 2.7 + p.ph * 5) * jit * dt * 30;
+    p.a = lerp(p.a, alpha, Math.min(1, dt * 4));
+    p.col = mix(p.col, col, Math.min(1, dt * 5));
+    p.flare = Math.max(0, p.flare - dt * 1.3);
+  }
+}
+const cv = document.getElementById('swarm'), cx = cv.getContext('2d');
+function draw() {
+  const w = cv.width, c = w / 2, u = w * 0.42, px = w / 104;
+  cx.clearRect(0, 0, w, w);
+  const night = cx.createRadialGradient(c, c, 0, c, c, c);
+  night.addColorStop(0, 'rgba(13,15,23,.42)'); night.addColorStop(0.7, 'rgba(13,15,23,.25)'); night.addColorStop(1, 'rgba(13,15,23,0)');
+  cx.globalCompositeOperation = 'source-over'; cx.fillStyle = night; cx.beginPath(); cx.arc(c, c, c, 0, Math.PI * 2); cx.fill();
+  cx.globalCompositeOperation = 'lighter';
+  for (const p of P) {
+    if (p.a < 0.005) continue;
+    const x = c + p.x * u, y = c + p.y * u;
+    const fc = p.flare > 0 ? mix(p.col, p.err ? ERR : WHITE, p.flare) : p.col;
+    const halo = (4.5 + p.flare * 12) * px;
+    const g = cx.createRadialGradient(x, y, 0, x, y, halo);
+    const rgb = `${fc[0] | 0},${fc[1] | 0},${fc[2] | 0}`;
+    g.addColorStop(0, `rgba(${rgb},${p.a})`); g.addColorStop(0.25, `rgba(${rgb},${p.a * 0.45})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    cx.fillStyle = g; cx.beginPath(); cx.arc(x, y, halo, 0, Math.PI * 2); cx.fill();
+  }
+  cx.globalCompositeOperation = 'source-over';
+}
+
+// ---- the script ----
+// [start, end, mode, what the user is saying (shown under the swarm while it is heard)]
+const MODES = [
+  [0.0, 1.2, 'idle'], [1.2, 3.6, 'listening', 'run the tests and fix whatever fails'],
+  [3.6, 4.4, 'thinking'], [4.4, 5.9, 'speaking'], [5.9, 7.6, 'thinking'],
+  [7.6, 9.6, 'listening', 'only the parser ones, skip the slow suite'],
+  [9.6, 10.4, 'thinking'], [10.4, 12.9, 'thinking'], [12.9, 15.4, 'speaking'], [15.4, 17.0, 'idle'],
+];
+// [time, html] lines appended to the session as the script reaches them
+const LOG = [
+  [0.0, '<span class="dim">&gt; /parlar:talk</span>'],
+  [0.0, '<span class="agent">parlar: Hi, I\'m listening.</span>'],
+  [3.6, '<span class="you">you: run the tests and fix whatever fails</span>'],
+  [4.4, '<span class="agent">parlar: Running the tests now.</span>'],
+  [5.0, '<span class="tool">⏺ <b>Bash</b>(cargo test)</span>'],
+  [5.6, '<span class="out">  ⎿  running 42 tests</span>'],
+  [6.3, '<span class="out">     test parser::rejects_empty ... </span><span class="bad">FAILED</span>'],
+  [6.6, '<span class="out">     test parser::span_offsets ... </span><span class="bad">FAILED</span>'],
+  [7.0, '<span class="out">     test result: </span><span class="bad">2 failed</span><span class="out">; 40 passed</span>'],
+  [9.6, '<span class="you">you: only the parser ones, skip the slow suite</span>'],
+  [10.4, '<span class="tool">⏺ <b>Update</b>(src/parser.rs)</span>'],
+  [10.8, '<span class="del">  -    assert_eq!(err.to_string(), "empty input");</span>'],
+  [11.0, '<span class="add">  +    assert_eq!(err.to_string(), "input is empty");</span>'],
+  [11.6, '<span class="tool">⏺ <b>Bash</b>(cargo test parser)</span>'],
+  [12.4, '<span class="out">  ⎿  test result: </span><span class="good">ok. 12 passed</span>'],
+  [12.9, '<span class="agent">parlar: Fixed both parser tests. They checked the old error text.</span>'],
+  [13.4, '<span class="agent">        All twelve pass now.</span>'],
+];
+const FLARES = [[6.3, true], [6.6, true], [12.4, false], [12.5, false]];
+const LOOP = 17.0;
+
+const log = document.getElementById('log'), mic = document.getElementById('mic'), status = document.getElementById('status');
+let shown = 0, flared = 0, last = 0, cur = null;
+
+// the user's voice level: syllable-like bursts while they talk
+function level(t, seg) {
+  if (seg[2] !== 'listening') return 0;
+  const s = t - seg[0], e = seg[1] - t;
+  const env = Math.min(1, s * 4, e * 4);
+  return env * (0.35 + 0.35 * Math.abs(Math.sin(t * 11)) * (0.6 + 0.4 * Math.sin(t * 3.3)));
+}
+
+function frame(t) {
+  const seg = MODES.find(m => t >= m[0] && t < m[1]) || MODES[MODES.length - 1];
+  if (seg !== cur) { mode = seg[2]; modeSince = t; cur = seg; }
+  // physics in fixed steps from the last frame
+  const dt = 1 / 60;
+  for (let x = last; x < t; x += dt) {
+    const s2 = MODES.find(m => x >= m[0] && x < m[1]) || seg;
+    step(dt, x, level(x, s2), s2[2] === 'speaking' ? 0.55 + 0.35 * Math.abs(Math.sin(x * 5)) : 0);
+  }
+  last = t;
+  while (flared < FLARES.length && FLARES[flared][0] <= t) {
+    const p = P[(flared * 13 + 5) % N]; p.flare = 1; p.err = FLARES[flared][1]; flared++;
+  }
+  while (shown < LOG.length && LOG[shown][0] <= t) {
+    const d = document.createElement('div'); d.className = 'line'; d.innerHTML = LOG[shown][1]; log.appendChild(d); shown++;
+  }
+    // what is being said appears word by word while it is heard
+  if (seg[2] === 'listening' && seg[3]) {
+    const words = seg[3].split(' '), k = Math.ceil((t - seg[0]) / (seg[1] - seg[0] - 0.3) * words.length);
+    const said = words.slice(0, Math.max(0, Math.min(words.length, k))).join(' ');
+    // narration of what the person says, not part of the indicator
+    mic.textContent = said ? `“${said}”` : '';
+  } else {
+    mic.textContent = '';
+  }
+  const working = mode === 'thinking' || (t > 4.4 && t < 12.9 && mode !== 'listening');
+  status.innerHTML = working ? `<span class="think">✻ ${['Working', 'Working.', 'Working..', 'Working...'][Math.floor(t * 3) % 4]}</span>` : '';
+  draw();
+}
+window.frame = frame;
+window.LOOP = LOOP;
+
+// played live when opened directly (the recorder sets ?record)
+if (!location.search.includes('record')) {
+  const t0 = performance.now();
+  const tick = () => {
+    const t = ((performance.now() - t0) / 1000) % LOOP;
+    if (t < last) { location.reload(); return; }
+    frame(t);
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+</script>
+</body>
+</html>
