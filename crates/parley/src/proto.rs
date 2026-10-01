@@ -107,8 +107,14 @@ pub enum Request {
         voice_off: Option<bool>,
         #[serde(default)]
         focus: Option<String>,
+        /// Audio device id from `Devices`.
+        #[serde(default)]
+        input: Option<String>,
+        #[serde(default)]
+        output: Option<String>,
     },
     State,
+    Devices,
     /// Stream `Ui` events until the connection closes.
     Subscribe,
 }
@@ -168,9 +174,20 @@ pub enum Response {
         delivered_to: Option<String>,
     },
     State(StateReport),
+    Devices {
+        inputs: Vec<Device>,
+        outputs: Vec<Device>,
+    },
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub current: bool,
 }
 
 /// Events for indicators. Levels are 0..1.

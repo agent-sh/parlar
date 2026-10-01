@@ -214,16 +214,24 @@ impl State {
 
 pub type Shared = Arc<Mutex<State>>;
 
+/// Device control, implemented by the process that owns the audio streams.
+pub trait Audio: Send + Sync {
+    fn devices(&self) -> (Vec<Device>, Vec<Device>);
+    fn set_input(&self, id: &str) -> anyhow::Result<()>;
+    fn set_output(&self, id: &str) -> anyhow::Result<()>;
+}
+
 pub struct Daemon {
     pub state: Shared,
     pub ui: broadcast::Sender<Ui>,
     pub voice: Arc<dyn Voice>,
+    pub audio: Option<Arc<dyn Audio>>,
 }
 
 impl Daemon {
     pub fn new(voice: Arc<dyn Voice>) -> Self {
         let (ui, _) = broadcast::channel(256);
-        Daemon { state: Arc::new(Mutex::new(State::new(ui.clone()))), ui, voice }
+        Daemon { state: Arc::new(Mutex::new(State::new(ui.clone()))), ui, voice, audio: None }
     }
 
     pub async fn serve(self: Arc<Self>, path: &Path) -> Result<()> {
@@ -396,7 +404,30 @@ impl Daemon {
                 let (id, delivered_to) = st.deliver(text, heard);
                 Response::Heard { id, delivered_to }
             }
-            Request::Set { active, mic_muted, voice_off, focus } => {
+            Request::Devices => match &self.audio {
+                Some(a) => {
+                    let (inputs, outputs) = a.devices();
+                    Response::Devices { inputs, outputs }
+                }
+                None => Response::Devices { inputs: vec![], outputs: vec![] },
+            },
+            Request::Set { active, mic_muted, voice_off, focus, input, output } => {
+                if input.is_some() || output.is_some() {
+                    let Some(a) = &self.audio else {
+                        return Response::Error { message: "this parleyd has no audio devices".into() };
+                    };
+                    let r = match (&input, &output) {
+                        (Some(i), _) => a.set_input(i),
+                        _ => Ok(()),
+                    }
+                    .and_then(|_| match &output {
+                        Some(o) => a.set_output(o),
+                        None => Ok(()),
+                    });
+                    if let Err(e) = r {
+                        return Response::Error { message: format!("{e:#}") };
+                    }
+                }
                 let mut st = self.state.lock().await;
                 if let Some(a) = active {
                     if a && !st.active {

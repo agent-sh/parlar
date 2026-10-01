@@ -83,6 +83,12 @@ enum Ctl {
     VoiceOff,
     /// Give voice focus to a session id.
     Focus { session: String },
+    /// List audio devices.
+    Devices,
+    /// Switch the mic to a device id from `devices`.
+    Input { id: String },
+    /// Switch the speaker to a device id from `devices`.
+    Output { id: String },
     /// Print indicator events as JSON lines.
     Watch,
 }
@@ -139,7 +145,22 @@ fn ctl(cmd: Ctl) -> Result<()> {
     let Some(mut c) = Client::connect() else {
         anyhow::bail!("parleyd is not running on {}", client::socket_path().display());
     };
-    let set = |active, mic_muted, voice_off| Request::Set { active, mic_muted, voice_off, focus: None };
+    let set = |active, mic_muted, voice_off| Request::Set {
+        active,
+        mic_muted,
+        voice_off,
+        focus: None,
+        input: None,
+        output: None,
+    };
+    let dev = |input, output| Request::Set {
+        active: None,
+        mic_muted: None,
+        voice_off: None,
+        focus: None,
+        input,
+        output,
+    };
     let req = match cmd {
         Ctl::State => Request::State,
         Ctl::Hear { text, heard } => Request::Hear { text, heard },
@@ -149,7 +170,17 @@ fn ctl(cmd: Ctl) -> Result<()> {
         Ctl::Unmute => set(None, Some(false), None),
         Ctl::VoiceOn => set(None, None, Some(false)),
         Ctl::VoiceOff => set(None, None, Some(true)),
-        Ctl::Focus { session } => Request::Set { active: None, mic_muted: None, voice_off: None, focus: Some(session) },
+        Ctl::Focus { session } => Request::Set {
+            active: None,
+            mic_muted: None,
+            voice_off: None,
+            focus: Some(session),
+            input: None,
+            output: None,
+        },
+        Ctl::Devices => Request::Devices,
+        Ctl::Input { id } => dev(Some(id), None),
+        Ctl::Output { id } => dev(None, Some(id)),
         Ctl::Watch => {
             use std::io::Write;
             let mut v = serde_json::to_vec(&Request::Subscribe)?;

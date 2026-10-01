@@ -91,9 +91,9 @@ fn main() -> Result<()> {
         Some(Cmd::Devices) => {
             let (ins, outs) = audio::list()?;
             println!("input:");
-            ins.iter().for_each(|d| println!("  {d}"));
+            ins.iter().for_each(|d| println!("  {}  {}", d.name, d.id));
             println!("output:");
-            outs.iter().for_each(|d| println!("  {d}"));
+            outs.iter().for_each(|d| println!("  {}  {}", d.name, d.id));
             return Ok(());
         }
         Some(Cmd::Transcribe { wav, keyterms, every_ms, no_partials }) => {
@@ -115,22 +115,32 @@ async fn serve(cli: Cli) -> Result<()> {
     } else if cli.silent {
         voice::Engine::Silent
     } else {
-        let player = audio::playback(cli.output.clone())?;
+        let player = audio::Player::new();
+        player.open(cli.output.as_deref())?;
         let tts = parley_moonshine::Tts::load(&models::tts_dir(), "en_us", &cli.voice, &[])?;
         let k = Arc::new(speak::Kokoro::new(tts, player.clone()));
         kokoro = Some((k.clone(), player));
         voice::Engine::Speaker(k)
     };
-    let d = Arc::new(daemon::Daemon::new(Arc::new(voice::Queue::new(engine))));
+    let mut d = daemon::Daemon::new(Arc::new(voice::Queue::new(engine)));
     let user_level = Arc::new(AtomicU32::new(0));
+    let gate = d.state.lock().await.mic_gate();
 
-    if !cli.no_mic {
-        let gate = d.state.lock().await.mic_gate();
-        let frames = if cli.input_wav.is_empty() {
-            audio::capture(cli.input.clone(), gate)?
-        } else {
-            audio::from_wavs(cli.input_wav.clone(), cli.input_delay, cli.input_gap, gate)?
-        };
+    let mut mic = None;
+    let frames = if cli.no_mic {
+        None
+    } else if cli.input_wav.is_empty() {
+        let (m, frames) = audio::Mic::new(gate);
+        m.open(cli.input.as_deref())?;
+        mic = Some(m);
+        Some(frames)
+    } else {
+        Some(audio::from_wavs(cli.input_wav.clone(), cli.input_delay, cli.input_gap, gate)?)
+    };
+    d.audio = Some(Arc::new(audio::Control { mic, player: kokoro.as_ref().map(|(_, p)| p.clone()) }));
+    let d = Arc::new(d);
+
+    if let Some(frames) = frames {
         let (playing, echo) = match &kokoro {
             Some((k, _)) => (k.playing.clone(), k.echo.clone()),
             None => (Arc::default(), Arc::default()),
