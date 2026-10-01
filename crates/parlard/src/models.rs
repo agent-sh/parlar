@@ -11,15 +11,7 @@ pub fn root() -> PathBuf {
     if let Some(p) = std::env::var_os("PARLAR_MODELS") {
         return PathBuf::from(p);
     }
-    data_home().join("parlar/models")
-}
-
-fn data_home() -> PathBuf {
-    if let Some(p) = std::env::var_os("XDG_DATA_HOME").filter(|p| !p.is_empty()) {
-        return PathBuf::from(p);
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".local/share")
+    parlar::dirs::data().join("models")
 }
 
 /// The G2P and vocoder root that libmoonshine resolves TTS asset keys against.
@@ -56,14 +48,27 @@ pub fn turn_model() -> PathBuf {
     root().join("turn").join(TURN_FILE)
 }
 
+/// The runtime files `fetch` installs. On Windows libmoonshine is linked into parlard, so only
+/// ONNX Runtime is a separate file there.
+#[cfg(not(windows))]
 const MOONSHINE: &str = "libmoonshine.so";
+#[cfg(not(windows))]
 const ORT: &str = "libonnxruntime.so.1";
+#[cfg(not(windows))]
+const RUNTIME: &[&str] = &[ORT, MOONSHINE];
+#[cfg(windows)]
+const ORT: &str = "onnxruntime.dll";
+#[cfg(windows)]
+const MOONSHINE: &str = ORT;
+#[cfg(windows)]
+const RUNTIME: &[&str] = &[ORT];
 
-/// The pinned libmoonshine release per architecture, with the sha256 of its tarball.
+/// The pinned libmoonshine release per OS and architecture, with the sha256 of its tarball.
 const MOONSHINE_VERSION: &str = "v0.1.5";
-const MOONSHINE_RELEASES: &[(&str, &str, &str)] = &[
-    ("x86_64", "linux-x86_64", "9c3a87fea93ff2ad957938868f95a0a366dce9ff8ad86bde6cdcf5a4cadb51df"),
-    ("aarch64", "linux-arm64", "1600c80a0806b7a2582307c98e7a56f4072e4b060498b08a0b75eb20af42def2"),
+const MOONSHINE_RELEASES: &[(&str, &str, &str, &str)] = &[
+    ("linux", "x86_64", "linux-x86_64", "9c3a87fea93ff2ad957938868f95a0a366dce9ff8ad86bde6cdcf5a4cadb51df"),
+    ("linux", "aarch64", "linux-arm64", "1600c80a0806b7a2582307c98e7a56f4072e4b060498b08a0b75eb20af42def2"),
+    ("windows", "x86_64", "windows-x86_64", "97c1987e8e1cd77bb5fe3b12ce5aad5172637107e1dfda112ea9b21bac8f4b65"),
 ];
 
 /// Where libmoonshine and its ONNX Runtime are: `$PARLAR_LIB_DIR`, next to this binary,
@@ -72,7 +77,7 @@ pub fn lib_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("PARLAR_LIB_DIR") {
         return PathBuf::from(p);
     }
-    let fetched = data_home().join("parlar/lib");
+    let fetched = parlar::dirs::data().join("lib");
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     let dir = exe.as_deref().and_then(|p| p.parent()).map(PathBuf::from);
     dir.iter()
@@ -93,7 +98,7 @@ pub fn ort_lib() -> PathBuf {
 /// Hand freed model memory back to the system. glibc keeps large freed heaps mapped, so without
 /// this an unloaded model still shows in RSS.
 pub fn release_memory() {
-    #[cfg(target_env = "gnu")]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         unsafe extern "C" {
             fn malloc_trim(pad: usize) -> i32;
@@ -109,21 +114,40 @@ pub fn moonshine() -> Result<()> {
     if !lib.exists() {
         bail!("{} is missing; run `parlard fetch`", lib.display());
     }
+    #[cfg(windows)]
+    dll_directory(&lib_dir())?;
     parlar_moonshine::open(&lib)
+}
+
+/// onnxruntime.dll is delay-loaded (see parlar-moonshine's build script): point the loader at the
+/// folder it was installed to before the first call into it.
+#[cfg(windows)]
+fn dll_directory(dir: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated wide path; the loader copies it
+    let ok = unsafe { windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr()) };
+    if ok == 0 {
+        bail!("set the DLL folder to {}: {}", dir.display(), std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Download the pinned libmoonshine release into `$XDG_DATA_HOME/parlar/lib`, unless one is
 /// already found.
 fn fetch_moonshine() -> Result<()> {
-    if lib_dir().join(MOONSHINE).exists() && lib_dir().join(ORT).exists() {
+    if RUNTIME.iter().all(|l| lib_dir().join(l).exists()) {
         return Ok(());
     }
-    let arch = std::env::consts::ARCH;
-    let Some((_, platform, sha)) = MOONSHINE_RELEASES.iter().find(|(a, _, _)| *a == arch) else {
-        bail!("no prebuilt libmoonshine for {arch}; put {MOONSHINE} and {ORT} in a directory and set PARLAR_LIB_DIR");
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let Some((_, _, platform, sha)) = MOONSHINE_RELEASES.iter().find(|(o, a, _, _)| *o == os && *a == arch) else {
+        bail!(
+            "no prebuilt libmoonshine for {os}/{arch}; put {} in a directory and set PARLAR_LIB_DIR",
+            RUNTIME.join(" and ")
+        );
     };
     let name = format!("moonshine-voice-{platform}");
-    let dest = data_home().join("parlar/lib");
+    let dest = parlar::dirs::data().join("lib");
     let tmp = dest.join(".fetch");
     let _ = std::fs::remove_dir_all(&tmp);
     let tarball = File {
@@ -147,7 +171,8 @@ fn fetch_moonshine() -> Result<()> {
     if !ok {
         bail!("unpack {name}.tar.gz failed");
     }
-    for lib in [ORT, MOONSHINE] {
+    std::fs::create_dir_all(&dest)?;
+    for lib in RUNTIME {
         std::fs::rename(tmp.join(&name).join("lib").join(lib), dest.join(lib))
             .with_context(|| format!("install {lib}"))?;
     }

@@ -138,11 +138,20 @@ fn main() -> Result<()> {
 }
 
 fn exec_daemon(args: Vec<String>) -> Result<()> {
-    use std::os::unix::process::CommandExt;
     let me = std::env::current_exe()?;
-    let bin = me.with_file_name("parlard");
-    let err = std::process::Command::new(&bin).args(args).exec();
-    anyhow::bail!("could not run {}: {err}", bin.display())
+    let bin = me.with_file_name(if cfg!(windows) { "parlard.exe" } else { "parlard" });
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&bin).args(args).exec();
+        anyhow::bail!("could not run {}: {err}", bin.display())
+    }
+    // no exec on Windows: run it and pass its exit code on
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new(&bin).args(args).status()?;
+        std::process::exit(status.code().unwrap_or(1))
+    }
 }
 
 fn status_line() -> String {
@@ -214,7 +223,7 @@ fn ctl(cmd: Ctl) -> Result<()> {
             use std::io::Write;
             let mut v = serde_json::to_vec(&Request::Subscribe)?;
             v.push(b'\n');
-            let mut s = std::os::unix::net::UnixStream::connect(client::socket_path())?;
+            let mut s = parlar::transport::connect()?;
             s.write_all(&v)?;
             drop(c);
             let mut c = Client::from_stream(s)?;

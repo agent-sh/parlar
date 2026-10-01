@@ -95,12 +95,9 @@ pub const PARAKEET: &str = "parakeet-tdt-0.6b-v3";
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
+/// `$XDG_CONFIG_HOME/parlar/config.toml` (`%APPDATA%\\parlar\\config.toml` on Windows).
 pub fn path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config"));
-    base.join("parlar/config.toml")
+    parlar::dirs::config().join("config.toml")
 }
 
 /// Read the settings once; later calls return the same. A broken file is an error, not a silent

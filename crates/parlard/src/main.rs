@@ -31,6 +31,9 @@ struct Cli {
     /// No mic: utterances only through `parlar ctl hear`.
     #[arg(long)]
     no_mic: bool,
+    /// Windows: start in the background without a console and exit (what login runs).
+    #[arg(long, hide = true)]
+    detach: bool,
     /// Input device (substring of its name, or its id). Default: the system default.
     #[arg(long)]
     input: Option<String>,
@@ -101,6 +104,10 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    #[cfg(windows)]
+    if cli.detach {
+        return detach();
+    }
     let cfg = config::load()?;
     match cli.cmd {
         Some(Cmd::Fetch { voice }) => return models::fetch(&voice_name(voice)),
@@ -331,13 +338,24 @@ async fn serve(cli: Cli) -> Result<()> {
     }
 
     let path = client::socket_path();
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let r = tokio::select! {
+    tokio::select! {
         r = d.serve(&path) => r,
         _ = tokio::signal::ctrl_c() => Ok(()),
-        _ = term.recv() => Ok(()),
-    };
-    r
+        r = terminated() => r,
+    }
+}
+
+/// The service manager asking parlard to stop: SIGTERM on Unix, a console close on Windows.
+#[cfg(unix)]
+async fn terminated() -> Result<()> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?.recv().await;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn terminated() -> Result<()> {
+    tokio::signal::windows::ctrl_close()?.recv().await;
+    Ok(())
 }
 
 fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Result<()> {
@@ -399,6 +417,7 @@ fn speak(text: &str, out: &std::path::Path, voice: &str, sentences: bool) -> Res
     Ok(())
 }
 
+#[cfg(unix)]
 /// Write `parlard.service` for the current user, pointing at this binary, and (re)start it.
 fn service() -> Result<()> {
     use anyhow::{Context, bail};
@@ -452,4 +471,51 @@ impl IfEmpty for String {
     fn if_empty(self, other: &str) -> String {
         if self.is_empty() { other.to_string() } else { self }
     }
+}
+
+/// Windows has no user service manager parlar can rely on without admin rights: start parlard at
+/// login from the per-user Run key, detached from any console, and start it now.
+#[cfg(windows)]
+fn service() -> Result<()> {
+    use anyhow::{Context, bail};
+    let exe = std::env::current_exe()?;
+    let cmd = format!("\"{}\" --detach", exe.display());
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let ok = std::process::Command::new("reg")
+        .args(["add", key, "/v", "parlard", "/t", "REG_SZ", "/d", &cmd, "/f"])
+        .status()
+        .context("run reg")?
+        .success();
+    if !ok {
+        bail!("could not add parlard to {key}");
+    }
+    // a reinstall replaces the running one, but never this process (`parlar service` runs us)
+    let me = format!("PID ne {}", std::process::id());
+    let _ = std::process::Command::new("taskkill").args(["/F", "/FI", "IMAGENAME eq parlard.exe", "/FI", &me]).output();
+    detach()?;
+    println!("parlard starts at login ({key}\\parlard) and is running; log: {}", log_path().display());
+    Ok(())
+}
+
+#[cfg(windows)]
+fn log_path() -> std::path::PathBuf {
+    parlar::dirs::data().join("parlard.log")
+}
+
+/// Start this parlard again in the background: no console window, output to the log file.
+#[cfg(windows)]
+fn detach() -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let log = log_path();
+    std::fs::create_dir_all(log.parent().unwrap())?;
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+    std::process::Command::new(std::env::current_exe()?)
+        .stdin(std::process::Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()?;
+    Ok(())
 }
