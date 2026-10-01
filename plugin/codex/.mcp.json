@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "parley": {
-      "command": "./bin/parley",
+    "parlar": {
+      "command": "./bin/parlar",
       "args": [
         "mcp",
         "--harness",

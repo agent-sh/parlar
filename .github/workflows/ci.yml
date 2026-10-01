@@ -23,11 +23,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --release --locked -- -D warnings
       - name: Shell scripts
-        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parley
+        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parlar
       - name: Plugin manifests
         run: |
           for f in .claude-plugin/marketplace.json plugin/claude/.claude-plugin/plugin.json plugin/claude/.mcp.json \
                    plugin/claude/hooks/hooks.json plugin/codex/.codex-plugin/plugin.json plugin/codex/.mcp.json \
-                   plugin/codex/hooks/hooks.json shell/gnome/parley@avifenesh/metadata.json; do
+                   plugin/codex/hooks/hooks.json shell/gnome/parlar@avifenesh/metadata.json; do
             python3 -m json.tool "$f" > /dev/null
           done

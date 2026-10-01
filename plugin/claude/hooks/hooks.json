@@ -5,12 +5,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook session-start",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook session-start",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook wait",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook wait",
             "asyncRewake": true,
             "timeout": 86400,
             "rewakeMessage": "The user spoke to you by voice:",
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook session-end",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook session-end",
             "timeout": 5
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook prompt",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook prompt",
             "timeout": 5
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook pre-tool",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook pre-tool",
             "timeout": 5
           }
         ]
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook post-tool",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook post-tool",
             "timeout": 5
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook post-tool-failure",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook post-tool-failure",
             "timeout": 5
           }
         ]
@@ -82,12 +82,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook stop",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook stop",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley hook wait",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar hook wait",
             "asyncRewake": true,
             "timeout": 86400,
             "rewakeMessage": "The user spoke to you by voice:",

@@ -1,7 +1,7 @@
-# parley design
+# parlar design
 
 Status: working end to end on Claude Code (Bedrock), 2026-10-01. Codex plugin written, not yet
-run live. Working name: parley.
+run live. Working name: parlar.
 
 Voice conversation mode for coding-agent harnesses (Claude Code, Codex, then Gemini CLI and
 opencode). You talk to a running session and it talks back, while the session stays fully usable
@@ -27,29 +27,29 @@ Non-goals:
 ## 2. Components
 
 ```
- harness session (any terminal)            parleyd (one per user)                indicator
+ harness session (any terminal)            parlard (one per user)                indicator
  +----------------------------+     unix   +-----------------------------+  unix  +-----------+
- | plugin: parley mcp (stdio) |<---------->| audio in: mic -> AEC -> VAD |<------>| GNOME ext |
- |         parley hook <evt>  |   socket   |   -> STT -> endpointing     | socket | (swarm)   |
+ | plugin: parlar mcp (stdio) |<---------->| audio in: mic -> AEC -> VAD |<------>| GNOME ext |
+ |         parlar hook <evt>  |   socket   |   -> STT -> endpointing     | socket | (swarm)   |
  +----------------------------+            | utterance queue per session |        +-----------+
                                            | say queue -> TTS -> speaker |        | statusline|
                                            +-----------------------------+        +-----------+
 ```
 
-- `parleyd`: Rust daemon. Owns audio devices, models, the conversation state machine, the utterance
+- `parlard`: Rust daemon. Owns audio devices, models, the conversation state machine, the utterance
   queue and the speech queue. One per user, shared by every attached session. Exactly one session
   has voice focus at a time.
-- `parley`: one Rust binary with subcommands.
-  - `parley mcp`: stdio MCP server the harness launches. Exposes `say` and the conversation-mode
+- `parlar`: one Rust binary with subcommands.
+  - `parlar mcp`: stdio MCP server the harness launches. Exposes `say` and the conversation-mode
     instructions.
-  - `parley hook <event>`: hook handler. Reads the hook JSON on stdin, talks to the daemon, prints
+  - `parlar hook <event>`: hook handler. Reads the hook JSON on stdin, talks to the daemon, prints
     the hook JSON reply. Must return in under 20 ms when there is nothing to deliver, and exit 0
     instantly when the daemon is not running.
-  - `parley status`: one-line state for a harness status line.
-  - `parley ctl`: start, stop, mute, focus, devices.
+  - `parlar status`: one-line state for a harness status line.
+  - `parlar ctl`: start, stop, mute, focus, devices.
 - Indicator: GNOME Shell extension (the only way to float above everything on GNOME Wayland).
   Tauri orb for macOS, Windows, KDE and wlroots later. Visual: the swarm (section 8).
-- Socket: `$XDG_RUNTIME_DIR/parley/parley.sock`, mode 0600, JSON lines.
+- Socket: `$XDG_RUNTIME_DIR/parlar/parlar.sock`, mode 0600, JSON lines.
 
 ## 3. Transport: plugin = MCP server + hooks
 
@@ -60,7 +60,7 @@ plugins are stable in 0.159).
 
 | Agent state | Mechanism | Latency |
 |---|---|---|
-| Idle at the prompt | `Stop` hook with `asyncRewake: true`: a background `parley hook wait` blocks on the daemon and exits 2 with the utterance on stderr, which wakes the model | as soon as the endpoint fires |
+| Idle at the prompt | `Stop` hook with `asyncRewake: true`: a background `parlar hook wait` blocks on the daemon and exits 2 with the utterance on stderr, which wakes the model | as soon as the endpoint fires |
 | Working (tool calls) | `PostToolUse` hook on `*` returns `hookSpecificOutput.additionalContext` with pending utterances | next tool boundary |
 | Working, user says stop | `PreToolUse` hook on `*` returns `permissionDecision: deny` plus the utterance as the reason | next tool call is refused |
 | Turn about to end | synchronous `Stop` hook claims anything pending and returns `decision: block` with it | instant |
@@ -135,7 +135,7 @@ Measured on this rig (Core Ultra 9 275HX), CPU only:
 - Moonshine Small streaming: 0.6 of real time with partials (2 or 4 cores alike), 0.31 without;
   final text 300 ms after the end with partials, 0.7 to 1.25 s without. Partials are the default.
 - Smart Turn: 37 to 50 ms per decision on 1 thread; features match Hugging Face to 2e-5.
-- parleyd while the user is silent: 0.7% of one core; about 400 MB resident with all models.
+- parlard while the user is silent: 0.7% of one core; about 400 MB resident with all models.
 
 ## 5. Endpointing: thinking pause vs. done
 
@@ -204,16 +204,16 @@ Interaction: click stops or starts the conversation, hover shows a mute button, 
 input device, output device, mute, voice off, stop. Keyboard: Enter, M, Shift+F10.
 
 GNOME: extension draws with `St.DrawingArea` (Cairo) in `Main.layoutManager.addTopChrome`,
-subscribes to the daemon socket for state plus levels at 30 Hz. Terminal: `parley status` for the
+subscribes to the daemon socket for state plus levels at 30 Hz. Terminal: `parlar status` for the
 Claude Code statusLine (`refreshInterval: 1`).
 
 ## 9. Session focus
 
 - Every attached session registers with its harness, cwd and session id (SessionStart hook, and
-  again on each typed prompt for sessions that started before parleyd).
+  again on each typed prompt for sessions that started before parlard).
 - Focus follows typing: the session the user last typed into has voice focus. A new session takes
   focus only when nobody has it. The indicator menu lists sessions under "Talk to", and
-  `parley ctl focus` sets it directly. Only the focused session gets utterances and is spoken.
+  `parlar ctl focus` sets it directly. Only the focused session gets utterances and is spoken.
 - Sessions whose harness process is gone are pruned every 30 s.
 - If a turn that started from speech ends without any `say`, the opening of the final reply is
   spoken instead (Haiku 4.5 often skips `say`; Sonnet 5.5 used it in every test).

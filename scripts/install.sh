@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install parley for the current user: binaries, libraries, models, harness plugins, the GNOME
+# Install parlar for the current user: binaries, libraries, models, harness plugins, the GNOME
 # indicator and a systemd user service. Nothing here needs root.
 #
 #   scripts/install.sh            build, install, fetch models, enable the service
-#   PREFIX=/opt/parley scripts/install.sh
+#   PREFIX=/opt/parlar scripts/install.sh
 #   scripts/install.sh --no-service
 #
 # Build needs: cargo, a C toolchain, curl, and on Linux the PipeWire headers
@@ -23,19 +23,19 @@ PREFIX=${PREFIX:-$HOME/.local}
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}
 CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
 BIN=$PREFIX/bin
-LIB=$PREFIX/lib/parley
-MARKET=$DATA/parley/marketplace
+LIB=$PREFIX/lib/parlar
+MARKET=$DATA/parlar/marketplace
 
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 T=$ROOT/target/release
 
 install -d "$BIN" "$LIB"
-install -m 755 "$T/parley" "$T/parleyd" "$BIN/"
-# parleyd finds these through its $ORIGIN/../lib/parley rpath
+install -m 755 "$T/parlar" "$T/parlard" "$BIN/"
+# parlard finds these through its $ORIGIN/../lib/parlar rpath
 install -m 644 "$T/libmoonshine.so" "$T/libonnxruntime.so.1" "$LIB/"
 
 # plugins: a local marketplace per harness. Harnesses copy a plugin into their own cache and drop
-# symlinks on the way, so bin/parley is a real copy (the CLI does not link libmoonshine).
+# symlinks on the way, so bin/parlar is a real copy (the CLI does not link libmoonshine).
 plugin() {
     harness=$1 dst=$2
     rm -rf "$dst"
@@ -43,60 +43,60 @@ plugin() {
     cp -R "$ROOT/plugin/$harness/." "$dst/"
     rm -rf "$dst/bin"
     mkdir "$dst/bin"
-    install -m 755 "$T/parley" "$dst/bin/parley"
+    install -m 755 "$T/parlar" "$dst/bin/parlar"
 }
-plugin claude "$MARKET/claude/parley"
+plugin claude "$MARKET/claude/parlar"
 mkdir -p "$MARKET/claude/.claude-plugin"
 cat > "$MARKET/claude/.claude-plugin/marketplace.json" <<JSON
 {
-  "name": "parley",
-  "owner": { "name": "parley" },
-  "plugins": [{ "name": "parley", "source": "./parley", "description": "Voice conversation mode" }]
+  "name": "parlar",
+  "owner": { "name": "parlar" },
+  "plugins": [{ "name": "parlar", "source": "./parlar", "description": "Voice conversation mode" }]
 }
 JSON
-plugin codex "$MARKET/codex/parley"
+plugin codex "$MARKET/codex/parlar"
 mkdir -p "$MARKET/codex/.agents/plugins"
 cat > "$MARKET/codex/.agents/plugins/marketplace.json" <<JSON
 {
-  "name": "parley",
-  "plugins": [{ "name": "parley", "source": "./parley" }]
+  "name": "parlar",
+  "plugins": [{ "name": "parlar", "source": "./parlar" }]
 }
 JSON
 
-"$BIN/parleyd" fetch
+"$BIN/parlard" fetch
 
 if command -v gnome-shell >/dev/null 2>&1; then
-    EXT=$DATA/gnome-shell/extensions/parley@avifenesh
+    EXT=$DATA/gnome-shell/extensions/parlar@avifenesh
     rm -rf "$EXT"
     mkdir -p "$EXT"
-    cp -R "$ROOT/shell/gnome/parley@avifenesh/." "$EXT/"
+    cp -R "$ROOT/shell/gnome/parlar@avifenesh/." "$EXT/"
 fi
 
 if [ "$SERVICE" = 1 ] && command -v systemctl >/dev/null 2>&1; then
-    UNIT=$CONFIG/systemd/user/parleyd.service
+    UNIT=$CONFIG/systemd/user/parlard.service
     mkdir -p "$(dirname "$UNIT")"
-    sed "s|@BINDIR@|$BIN|" "$ROOT/packaging/parleyd.service" > "$UNIT"
+    sed "s|@BINDIR@|$BIN|" "$ROOT/packaging/parlard.service" > "$UNIT"
     systemctl --user daemon-reload
-    systemctl --user enable --now parleyd.service
+    systemctl --user enable --now parlard.service
 fi
 
 cat <<MSG
 
-parley is installed in $PREFIX.
+parlar is installed in $PREFIX.
 
 Claude Code:
   claude plugin marketplace add "$MARKET/claude"
-  claude plugin install parley@parley
-  parley setup claude        (lets say run without a permission prompt)
-  Status line (optional): set statusLine.command to "parley status" with refreshInterval 1.
+  claude plugin install parlar@parlar
+  parlar setup claude        (lets say run without a permission prompt)
+  Status line (optional): set statusLine.command to "parlar status" with refreshInterval 1.
 
 Codex:
   codex plugin marketplace add "$MARKET/codex"
-  codex plugin add parley@parley
-  Then trust the parley hooks once from the hooks review prompt.
+  codex plugin add parlar@parlar
+  Then trust the parlar hooks once from the hooks review prompt.
 
 GNOME indicator (Wayland picks up new extensions after you log out and back in):
-  gnome-extensions enable parley@avifenesh
+  gnome-extensions enable parlar@avifenesh
 
-Devices: parley ctl devices, then parley ctl input <id> or parley ctl output <id>.
+Devices: parlar ctl devices, then parlar ctl input <id> or parlar ctl output <id>.
 MSG

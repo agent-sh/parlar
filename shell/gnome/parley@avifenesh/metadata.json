@@ -1,7 +1,0 @@
-{
-  "uuid": "parley@avifenesh",
-  "name": "parley",
-  "description": "Floating voice indicator for parley conversations with coding agents. Click to stop or start, hover to mute, right-click for devices.",
-  "shell-version": ["50"],
-  "url": "https://github.com/avifenesh/parley"
-}

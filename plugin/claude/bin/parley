@@ -1,7 +1,7 @@
 #!/bin/sh
-# Runs the installed parley. Before parley is installed the plugin must stay out of the way:
-# hooks exit quietly, and /parley:setup explains what to install.
-for p in "${PARLEY_BIN:-}" "$HOME/.local/bin/parley" "$(command -v parley 2>/dev/null)"; do
+# Runs the installed parlar. Before parlar is installed the plugin must stay out of the way:
+# hooks exit quietly, and /parlar:setup explains what to install.
+for p in "${PARLAR_BIN:-}" "$HOME/.local/bin/parlar" "$(command -v parlar 2>/dev/null)"; do
     if [ -n "$p" ] && [ -x "$p" ] && [ "$p" != "$0" ]; then
         exec "$p" "$@"
     fi
@@ -10,5 +10,5 @@ if [ "$1" = "hook" ]; then
     cat >/dev/null
     exit 0
 fi
-echo "parley is not installed; run /parley:setup" >&2
+echo "parlar is not installed; run /parlar:setup" >&2
 exit 1

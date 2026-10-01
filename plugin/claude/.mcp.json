@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "parley": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/parley",
+    "parlar": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/parlar",
       "args": ["mcp", "--harness", "claude"]
     }
   }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/parley", "crates/parley-moonshine", "crates/parleyd"]
+members = ["crates/parlar", "crates/parlar-moonshine", "crates/parlard"]
 
 [workspace.package]
 edition = "2024"
