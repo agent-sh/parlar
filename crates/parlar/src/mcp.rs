@@ -149,12 +149,11 @@ fn reply_error(out: &mut impl Write, id: Option<Value>, code: i64, message: &str
 }
 
 /// The folder the harness runs in, as the MCP server sees it. Codex starts plugin servers in the
-/// plugin's own root (`<root>/bin/parlar`), which says nothing about the project, so that one is
-/// not reported and the hooks supply the folder instead.
+/// plugin's own root, which says nothing about the project, so a folder holding a plugin manifest
+/// is not reported and the hooks supply the folder instead. The manifest check works whether the
+/// server is the copied binary or the launcher's target elsewhere on the PATH.
 fn project_dir() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    let plugin_root = exe.as_deref().and_then(|e| e.parent()).and_then(|b| b.parent());
-    let cwd_real = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-    (plugin_root != Some(cwd_real.as_path())).then(|| cwd.display().to_string())
+    let plugin = [".codex-plugin", ".claude-plugin"].iter().any(|m| cwd.join(m).join("plugin.json").is_file());
+    (!plugin).then(|| cwd.display().to_string())
 }
