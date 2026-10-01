@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Stopping or muting from the indicator (or `/parlar:stop`, `/parlar:mute`) now closes the mic
+  device, not just the audio parlar reads from it. The system mic indicator goes out, and a
+  Bluetooth headset can leave hands-free mode. Speech that was being heard is dropped instead of
+  being transcribed from the queue.
+
 ## [0.1.2] - 2026-10-01
 
 ### Added
