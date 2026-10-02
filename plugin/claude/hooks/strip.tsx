@@ -6,8 +6,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Device, HistoryLine, Panel, Phase, SessionRow, Strip } from '../types'
-import { AGENT, registerRows, USER } from './rows'
+import type { Device, HistoryLine, Panel, Phase, Rows, SessionRow, Strip } from '../types'
+import { AGENT, registerRows, USER, withNote } from './rows'
 
 const IDLE: Strip = {
   connected: false,
@@ -20,6 +20,8 @@ const IDLE: Strip = {
   flare: false,
 }
 const strip = atom({ plugin: 'parlar', key: 'strip' } as const, IDLE)
+// the rows rows.tsx draws; the strip adds parlar's notes, which only the watch stream carries
+const rows = atom({ plugin: 'parlar', key: 'rows' } as const, { wakes: {}, calls: {} } as Rows)
 const panel = atom(
   { plugin: 'parlar', key: 'panel' } as const,
   { history: [], sessions: [], devices: null } as Panel,
@@ -35,6 +37,40 @@ const METER = 8
 // level events come at 30 Hz; the terminal redraws at this pace at most
 const FRAME_MS = 125
 const CAPTION_MS = 15_000
+// the longest phase word ('connecting'), so the line does not shift between phases
+const WORD_WIDTH = 10
+// cells of the strip's fixed parts: '● voice ' and the padded word, then each label and button
+// as the terminal draws it ('m: mute'), each with the gap before it
+const CELLS = {
+  phase: 8 + 10,
+  caption: 1,
+  meter: 1 + 8,
+  notFocused: 1 + 16,
+  captionsOnly: 1 + 13,
+  talk: 1 + 12,
+  mute: 1 + 9,
+  voice: 1 + 12,
+  stop: 1 + 7,
+  pane: 1 + 7,
+}
+
+/** What fits in `width`: mute and stop always (and talk here off focus), the rest by priority. */
+export function fits(width: number, s: { focused: boolean; voiceOff: boolean }, metering: boolean) {
+  // the caption box is always in the row, so its gap is too; the button group's leading gap is
+  // the one its first button counts
+  let left = width - CELLS.phase - CELLS.caption - CELLS.mute - CELLS.stop - (s.focused ? 0 : CELLS.talk)
+  const take = (want: boolean, cells: number) => {
+    if (!want || left < cells) return false
+    left -= cells
+    return true
+  }
+  const meter = take(metering, CELLS.meter)
+  const voice = take(true, CELLS.voice)
+  const notFocused = take(!s.focused, CELLS.notFocused)
+  const captionsOnly = take(s.voiceOff, CELLS.captionsOnly)
+  const pane = take(true, CELLS.pane)
+  return { meter, voice, notFocused, captionsOnly, pane }
+}
 const FLARE_MS = 1_200
 
 const WORDS: Record<Phase, string> = {
@@ -51,7 +87,7 @@ type Event =
   | { ui: 'phase'; phase: Phase; mic_muted: boolean; voice_off: boolean }
   | { ui: 'levels'; user: number; agent: number }
   | { ui: 'tool'; ok: boolean; name: string | null }
-  | { ui: 'caption'; who: string; text: string; session?: string; partial?: boolean }
+  | { ui: 'caption'; who: string; text: string; session?: string; partial?: boolean; call?: string }
   | { ui: 'notice'; text: string }
 
 export const meter = (levels: readonly number[]) =>
@@ -151,6 +187,11 @@ async function apply($: EngineInterface, ev: Event, now: number) {
       if (!mine) return
       live.captionAt = now
       await set($, { caption: { who: ev.who, text: ev.text } })
+      // parlar's answer during a long tool call is drawn on that call's row
+      if (ev.call) {
+        const call = ev.call
+        await update($, rows, r => withNote(r, call, ev.text))
+      }
       // the pane keeps finished lines, not the words so far
       if (ev.partial) return
       const line: HistoryLine = { who: ev.who === 'user' ? 'you' : 'parlar', text: ev.text }
@@ -398,51 +439,80 @@ export const register: Register = on => {
     const color = s.flare ? 'red' : s.muted ? undefined : s.phase === 'working' ? AGENT : talking
     const word = s.muted ? 'mic muted' : WORDS[s.phase]
     const metering = s.phase === 'listening' || s.phase === 'interrupting' || s.phase === 'speaking'
-    const who = s.caption?.who === 'user' ? 'you' : 'agent'
+    const who = s.caption?.who === 'user' ? 'you' : s.caption?.who === 'parlar' ? 'parlar' : 'agent'
+    // the engine draws its collapse mark in the last columns
+    const width = Math.max(20, e.props.bodyColumns - 4)
+    const fit = fits(width, s, metering)
 
     return (
       <Box flexDirection="column">
-        {/* the engine draws its collapse mark in the last columns */}
-        <Box flexDirection="row" gap={1} width={Math.max(20, e.props.bodyColumns - 4)}>
-          <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused}>
-            {s.focused ? '●' : '○'} voice {word}
-          </Text>
-          {metering && s.levels.length > 0 && <Text color={talking}>{meter(s.levels)}</Text>}
-          {!s.focused && <Text dimColor>not focused here</Text>}
-          {s.voiceOff && <Text dimColor>captions only</Text>}
-          {s.focused && s.caption && (
-            <Box flexGrow={1} flexShrink={1}>
-              <Text dimColor wrap="truncate-end">
-                {who}: {s.caption.text}
+        <Box flexDirection="row" gap={1} width={width}>
+          {/* fixed widths and no wrapping: the strip stays one line, and its parts do not shift
+              as the phase and the meter change */}
+          <Box flexShrink={0}>
+            <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused} wrap="truncate-end">
+              {s.focused ? '●' : '○'} voice {word.padEnd(WORD_WIDTH)}
+            </Text>
+          </Box>
+          {fit.meter && (
+            <Box flexShrink={0}>
+              <Text color={talking} wrap="truncate-end">
+                {meter(s.levels).padEnd(METER)}
               </Text>
             </Box>
           )}
-          {!s.focused && (
-            // talk attaches a session that started before parlard, which focus alone cannot
-            <Button
-              key="focus"
-              label="talk here"
-              hotkey="t"
-              plain
-              onPress={() => ctl($, 'talk', '--session', live.session)}
-            />
+          {fit.notFocused && (
+            <Box flexShrink={0}>
+              <Text dimColor wrap="truncate-end">
+                not focused here
+              </Text>
+            </Box>
           )}
-          <Button
-            key="mute"
-            label={s.muted ? 'unmute' : 'mute'}
-            hotkey="m"
-            plain
-            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
-          />
-          <Button
-            key="voice"
-            label={s.voiceOff ? 'voice on' : 'voice off'}
-            hotkey="v"
-            plain
-            onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
-          />
-          <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
-          <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />
+          {fit.captionsOnly && (
+            <Box flexShrink={0}>
+              <Text dimColor wrap="truncate-end">
+                captions only
+              </Text>
+            </Box>
+          )}
+          {/* the caption takes what is left; a long one keeps its last words */}
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            {s.focused && s.caption && (
+              <Text dimColor wrap="truncate-start">
+                {who}: {s.caption.text}
+              </Text>
+            )}
+          </Box>
+          <Box flexShrink={0} gap={1}>
+            {!s.focused && (
+              // talk attaches a session that started before parlard, which focus alone cannot
+              <Button
+                key="focus"
+                label="talk here"
+                hotkey="t"
+                plain
+                onPress={() => ctl($, 'talk', '--session', live.session)}
+              />
+            )}
+            <Button
+              key="mute"
+              label={s.muted ? 'unmute' : 'mute'}
+              hotkey="m"
+              plain
+              onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+            />
+            {fit.voice && (
+              <Button
+                key="voice"
+                label={s.voiceOff ? 'voice on' : 'voice off'}
+                hotkey="v"
+                plain
+                onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
+              />
+            )}
+            <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
+            {fit.pane && <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />}
+          </Box>
         </Box>
         {below}
       </Box>

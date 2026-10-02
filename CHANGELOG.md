@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- Claude Code strip: it stays one line. The phase word and meter keep a fixed width, a long
+  caption shows its last words instead of its first, and the labels and buttons that do not fit
+  drop out by priority (mute and stop stay).
+- Claude Code: parlar's "Got it, I'm still on this step" during a long tool call draws as a dim
+  note on that call's row, not as a "PostToolUse:Bash says" hook message.
 - parlard no longer hears its own voice as the user on laptop speakers. Its echo there drives the
   mic past full scale, which no echo canceller can undo; while that happens, parlard ignores the
   mic for the rest of the line and its echo tail, and says once that talking over it needs a lower
