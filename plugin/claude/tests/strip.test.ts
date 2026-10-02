@@ -5,23 +5,33 @@ const SESSION = 'abc-123'
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 9 }, view: {} } } as const
 
 // a parlard that sends `events` on the watch stream, then holds it open
-function daemon(on: On, events: object[], focused: boolean) {
+function daemon(on: On, events: object[], focusedAtStart: boolean) {
   const ran: string[][] = []
+  const toasts: string[] = []
+  // what the test changes as it goes: where focus is, and whether parlard still answers
+  const now = { focused: focusedAtStart, down: false }
+  // each watch holds its stream open until released, as a live parlard does
   let release = () => {}
-  const held = new Promise<void>(r => (release = r))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
+  on('ui.toast', async ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('session.id', async () => ({ value: SESSION }))
   on('env.set', async () => ({ value: undefined }))
   on('command.register', async () => ({ value: { command: 'parlar' } }))
   on('ui.open', async () => ({ value: { isPlaced: true } }))
   on('process.spawn', async function* () {
+    const held = new Promise<void>(r => (release = r))
     for (const ev of events) yield { stream: 'stdout' as const, text: JSON.stringify(ev) + '\n' }
     await held
     return { value: { code: 0, signal: null } }
   })
   on('process.run', ($, e) => {
     ran.push([...e.argv])
+    const focused = now.focused
+    if (now.down) return { value: { exitCode: 1, stdout: '', stderr: 'not running', isStdoutTruncated: false, isStderrTruncated: false } }
     const state = {
       sessions: [
         { session: SESSION, cwd: '/w/parlar', harness: 'claude', focused },
@@ -39,7 +49,7 @@ function daemon(on: On, events: object[], focused: boolean) {
     const stdout = JSON.stringify(answers[e.argv[2] ?? ''] ?? { kind: 'ok' })
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { ran, release }
+  return { ran, release: () => release(), toasts, now }
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -134,5 +144,25 @@ test('the pane offers talk here when this session lost focus', async ($, on) => 
   await ui.press({ key: 'attach' })
   expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'talk', '--session', SESSION])
   await ui.unmount()
+  d.release()
+})
+
+test('toasts say where the voice went and when parlard stops', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const d = daemon(on, [{ ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false }], true)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  expect(d.toasts).toEqual([])
+  d.now.focused = false
+  await clock.advance(2_000)
+  expect(d.toasts).toEqual(['Voice moved to ginza'])
+  d.now.down = true
+  d.release()
+  await clock.advance(100)
+  expect(d.toasts[1]).toMatch(/parlard stopped/)
+  // the reconnect timer finds it again
+  d.now.down = false
+  await clock.advance(5_000)
+  expect(d.toasts[2]).toBe('parlard is back')
   d.release()
 })
