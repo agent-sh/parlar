@@ -10,6 +10,7 @@ const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: f
 function daemon(on: On, events: object[], focusedAtStart: boolean) {
   const ran: string[][] = []
   const toasts: string[] = []
+  const scrolls: object[] = []
   // what the test changes as it goes: where focus is, and whether parlard still answers
   const now = { focused: focusedAtStart, down: false }
   // each watch holds its stream open until released, as a live parlard does
@@ -24,6 +25,10 @@ function daemon(on: On, events: object[], focusedAtStart: boolean) {
   on('env.set', async () => ({ value: undefined }))
   on('command.register', async () => ({ value: { command: 'parlar' } }))
   on('ui.open', async () => ({ value: { isPlaced: true } }))
+  on('ui.scroll', async ($, e) => {
+    scrolls.push({ ...e })
+    return { value: {} }
+  })
   on('process.spawn', async function* () {
     const held = new Promise<void>(r => (release = r))
     for (const ev of events) yield { stream: 'stdout' as const, text: JSON.stringify(ev) + '\n' }
@@ -51,7 +56,7 @@ function daemon(on: On, events: object[], focusedAtStart: boolean) {
     const stdout = JSON.stringify(answers[e.argv[2] ?? ''] ?? { kind: 'ok' })
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { ran, release: () => release(), toasts, now }
+  return { ran, release: () => release(), toasts, now, scrolls }
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -249,29 +254,25 @@ test("parlar's note during a long call draws dim on that call's row", async ($, 
 })
 
 const SPINNER = { component: 'Spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' } } as const
-const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
 
-test('while nobody talks the strip leaves its line and rides the spinner and the hint', async ($, on) => {
+test('during a turn with nobody talking the spinner carries the voice; idle, the strip does', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000 })
-  let tail: string | undefined
-  on('ui.render', { component: 'PromptHint' }, ($, e) => {
-    tail = (e.props as { tail?: string }).tail
-    return $.ui.resolve(e).Text({ children: 'hint' })
-  })
   const d = daemon(on, [{ ui: 'phase', phase: 'working', mic_muted: false, voice_off: false }], true)
   await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
   await clock.advance(2_000)
-  const band = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'mute' })).toBeUndefined()
-  await band.unmount()
+  const working = { ...BAND, props: { ...BAND.props, isWorking: true } }
+  const busy = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...working } as never)
+  expect(await busy.find({ key: 'mute' })).toBeUndefined()
+  await busy.unmount()
   const spin = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...SPINNER } as never)
   expect(await spin.find({ type: 'Text', text: /● voice/ })).toBeDefined()
   await spin.press({ key: 'spin-mute' })
   expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'mute'])
   await spin.unmount()
-  const hint = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...HINT } as never)
-  expect(tail).toMatch(/● voice ready · \/parlar/)
-  await hint.unmount()
+  // no turn running: no spinner line to ride, so the strip keeps its line and its buttons
+  const idle = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
+  expect(await idle.find({ key: 'mute' })).toBeDefined()
+  await idle.unmount()
   d.release()
 })
 
@@ -292,5 +293,23 @@ test('the pane button opens the pane and closes it again', async ($, on) => {
   expect(closed).toContain('parlar')
   expect(await band.find({ key: 'mute' })).toBeDefined()
   await band.unmount()
+  d.release()
+})
+
+test('the pane has a close button', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const closed: string[] = []
+  on('ui.close', async ($, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
+  const d = daemon(on, [{ ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false }], true)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...PANE } as never)
+  await $.command.run({ command: 'parlar' } as never)
+  await ui.press({ key: 'pane-close' })
+  expect(closed).toContain('parlar')
+  await ui.unmount()
   d.release()
 })

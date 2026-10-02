@@ -199,6 +199,7 @@ async function apply($: EngineInterface, ev: Event, now: number) {
       if (ev.partial) return
       const line: HistoryLine = { who: ev.who === 'user' ? 'you' : 'parlar', text: ev.text }
       await update($, panel, p => ({ ...p, history: [...p.history, line].slice(-HISTORY) }))
+      void toLatest($).catch(quiet)
       return
     }
   }
@@ -271,7 +272,14 @@ async function openPane($: EngineInterface) {
   await set($, { paneOpen: true })
   const placed = await $.ui.open({ id: PANE, title: 'Voice' })
   await Promise.all([refreshFocus($), refreshDevices($)])
+  await toLatest($)
   return placed
+}
+
+/** The pane opens on, and follows, the newest line of the conversation. */
+async function toLatest($: EngineInterface) {
+  if (!(await read($, strip)).paneOpen) return
+  await $.ui.scroll({ in: PANE, to: 'end' }).catch(quiet)
 }
 
 /** The pane button: opens the pane, or closes it when it is open. */
@@ -383,16 +391,6 @@ export const register: Register = on => {
           onPress={() => pickDevice($, kind, d.id)}
         />
       )
-    const opened =
-      p.open === 'sessions'
-        ? 1 + others.length
-        : p.open === 'input'
-          ? inputs.length
-          : p.open === 'output'
-            ? outputs.length
-            : 0
-    // the conversation takes what the header lines and an open section leave
-    const room = Math.max(3, (e.viewport?.rows ?? 24) - 8 - opened)
     return (
       <Box flexDirection="column">
         {/* the one place with every control in every state (idle, muted, stopped), on the
@@ -425,6 +423,7 @@ export const register: Register = on => {
               onPress={() => ctl($, conversing ? 'off' : 'on')}
             />
           )}
+          <Button key="pane-close" label="close" plain onPress={() => togglePane($)} />
         </Box>
         {header('sessions', 'Talking to', focusedName ? folder(focusedName.cwd) : 'nobody')}
         {p.open === 'sessions' && (
@@ -473,7 +472,7 @@ export const register: Register = on => {
         {p.open === 'output' && <Box flexDirection="column">{outputs.map(d => pick('output', d))}</Box>}
         <Box flexDirection="column" marginTop={1}>
           {p.history.length === 0 && <Text dimColor>Nothing said yet.</Text>}
-          {p.history.slice(-room).map(l => (
+          {p.history.map(l => (
             <Text color={l.who === 'you' ? USER : AGENT} wrap="wrap">
               {l.who} ▸ {l.text}
             </Text>
@@ -533,15 +532,6 @@ export const register: Register = on => {
     )
   })
 
-  // idle and nobody talks: the hint line under the prompt says the voice is there
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const s = await read($, strip)
-    if (e.props.isWorking || !s.connected || s.phase === 'stopped' || TALKING.has(s.phase)) return next(e)
-    const mark = s.focused ? '●' : '○'
-    const state = s.muted ? 'mic muted' : s.focused ? 'voice ready' : 'voice in another session'
-    return next({ ...e, props: { ...e.props, tail: `${mark} ${state} · /parlar` } })
-  })
-
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, strip)
     if (e.props.hasSurvey || !s.connected || s.phase === 'stopped') return next(e)
@@ -557,8 +547,8 @@ export const register: Register = on => {
     // the engine draws its collapse mark in the last columns
     const width = Math.max(20, e.props.bodyColumns - 4)
     const fit = fits(width, s, metering)
-    // while nobody talks the strip gives up its line: the spinner or the hint line carries it
-    if (!metering) return below
+    // while a turn runs and nobody talks, the spinner line carries the voice and its buttons
+    if (!metering && e.props.isWorking) return below
 
     return (
       <Box flexDirection="column">
