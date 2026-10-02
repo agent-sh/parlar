@@ -20,7 +20,7 @@
 ### Fixed
 - parlard no longer exits at startup when the conversation was saved as on and the mic cannot
   open. It logs the error and keeps running, as `parlar ctl on` already did, and the mic
-  supervisor opens the device when it can.
+  supervisor retries the device every few seconds until it opens.
 
 ## [0.1.8] - 2026-10-01
 
