@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- Claude Code: toasts when parlard stops in the middle of a conversation, when it is back, and
+  when typing in another session moves the voice there ("Voice moved to ginza").
 - Claude Code: `/parlar` (or `p` on the strip) opens the voice pane: the conversation heard and
   spoken while the session had focus, the sessions parlard knows with "talk there" for each, mic
   and speaker pickers, and mute, voice and start or stop.

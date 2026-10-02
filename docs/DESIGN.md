@@ -228,6 +228,11 @@ Voice pane (`/parlar`, or `p` on the strip): the strip's captions while this ses
 devices from `parlar ctl devices`, one button each, deduplicated by name and capped at 6 per kind
 (plain ALSA lists one card many times). Buttons rather than Select, which not every surface has.
 
+Toasts: "parlard stopped" when the watch ends during a conversation and `parlar ctl state` no
+longer answers (a module reload also ends the watch, and must stay quiet), "parlard is back" when
+the reconnect finds it with the conversation on, and "Voice moved to <folder>" when the focus poll
+sees this session lose focus.
+
 ## 9. Session focus
 
 - Every attached session registers with its harness, cwd and session id (SessionStart hook, and

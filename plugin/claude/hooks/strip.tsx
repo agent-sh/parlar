@@ -70,6 +70,8 @@ const live = {
   dirty: false,
   captionAt: 0,
   flareAt: 0,
+  // set once the watch has seen parlard, so the first connect of a session raises no toast
+  seen: false,
 }
 
 function set($: EngineInterface, patch: Partial<Strip>) {
@@ -91,7 +93,13 @@ async function refreshFocus($: EngineInterface) {
         : [],
     )
     const focused = sessions.some(s => s.session === live.session && s.focused)
-    if (focused !== (await read($, strip)).focused) await set($, { focused })
+    const was = await read($, strip)
+    if (focused !== was.focused) {
+      await set($, { focused })
+      // typing elsewhere moves the voice without a sound here; say where it went
+      const to = sessions.find(s => s.focused)
+      if (was.focused && to && was.phase !== 'stopped') $.ui.toast(`Voice moved to ${folder(to.cwd)}`)
+    }
     if (JSON.stringify(sessions) !== JSON.stringify((await read($, panel)).sessions)) {
       await update($, panel, p => ({ ...p, sessions }))
     }
@@ -102,7 +110,10 @@ async function refreshFocus($: EngineInterface) {
 
 async function apply($: EngineInterface, ev: Event, now: number) {
   switch (ev.ui) {
-    case 'phase':
+    case 'phase': {
+      const back = live.seen && !(await read($, strip)).connected && ev.phase !== 'stopped'
+      live.seen = true
+      if (back) $.ui.toast('parlard is back')
       live.phase = ev.phase
       live.levels = []
       await set($, {
@@ -114,6 +125,7 @@ async function apply($: EngineInterface, ev: Event, now: number) {
       })
       void refreshFocus($).catch(quiet)
       return
+    }
     case 'levels': {
       const phase = live.phase
       const l =
@@ -166,8 +178,18 @@ async function watch($: EngineInterface) {
     // parlar is not on PATH: stay quiet, as the command hooks do
   } finally {
     live.watching = false
+    const was = await read($, strip)
     await set($, { connected: false, levels: [] })
+    // the watch also ends when the module unloads; only a parlard that no longer answers is news
+    if (was.connected && was.phase !== 'stopped' && !(await answers($))) {
+      $.ui.toast('parlard stopped: voice is off until it is back', { timeoutMs: 8_000 })
+    }
   }
+}
+
+async function answers($: EngineInterface) {
+  const r = await $.process.run([live.bin, 'ctl', 'state'], { timeoutMs: 2_000 }).catch(() => undefined)
+  return r?.exitCode === 0
 }
 
 // a timer that fires as the module unloads finds $ gone; the next load starts its own
