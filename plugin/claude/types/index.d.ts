@@ -16,8 +16,16 @@ export type Strip = {
   flare: boolean
 }
 
+/** Utterances by the transcript row that delivered them, for drawing that row. */
+export type Rows = {
+  /** By the uuid of a voice wake's user row. */
+  wakes: Record<string, string[]>
+  /** By the tool call whose result or hook passed them on. */
+  calls: Record<string, string[]>
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    parlar: { strip: Strip }
+    parlar: { strip: Strip; rows: Rows }
   }
 }

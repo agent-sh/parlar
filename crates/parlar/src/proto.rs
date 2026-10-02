@@ -158,6 +158,10 @@ pub enum Request {
     /// spoke. Hooks print them as a system message, so the transcript costs the model nothing.
     Transcript {
         origin: Origin,
+        /// The harness draws the heard and spoken lines in its own rows (the Claude Code strip
+        /// module): drop those and return only the rest, such as where the voice moved.
+        #[serde(default)]
+        rows: bool,
     },
     /// /parlar:talk: attach the session if needed, unmute, start the conversation and give this
     /// session voice focus.

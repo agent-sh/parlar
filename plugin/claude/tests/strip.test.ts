@@ -12,6 +12,7 @@ function daemon(on: On, events: object[], focused: boolean) {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
   on('session.id', async () => ({ value: SESSION }))
+  on('env.set', async () => ({ value: undefined }))
   on('process.spawn', async function* () {
     for (const ev of events) yield { stream: 'stdout' as const, text: JSON.stringify(ev) + '\n' }
     await held

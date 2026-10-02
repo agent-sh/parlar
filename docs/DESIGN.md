@@ -214,6 +214,14 @@ state` every 2 s while a conversation is on. It draws nothing while the conversa
 parlard is not running, and reconnects within 5 s when parlard comes back. The command hooks still
 carry the conversation; the strip only shows it and runs `parlar ctl` for its buttons.
 
+Transcript rows (`plugin/claude/hooks/rows.tsx`): a say call draws as `parlar ▸ <text>` on its tool
+row, an utterance as `you ▸ <text>` on the row that delivered it: the voice wake row (its uuid,
+noted at `session.append`), a say result ("the user said meanwhile"), or the tool call whose
+PostToolUse context carried it (the last tool result appended before that context row). The
+module sets `PARLAR_ROWS=1` for the hooks it starts; `parlar hook` then asks the daemon for the
+transcript with `rows: true`, which drops the heard and spoken lines and returns the rest. ctrl+o
+shows the engine's own rows. Rows from before a resume draw as the engine draws them.
+
 ## 9. Session focus
 
 - Every attached session registers with its harness, cwd and session id (SessionStart hook, and

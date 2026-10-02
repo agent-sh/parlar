@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- Claude Code: the spoken exchange draws as clean "you" and "parlar" lines in the transcript, on
+  the row that carried it, in place of "PostToolUse:... says" hook messages. The voice wake row
+  shows what was heard. Hooks see `PARLAR_ROWS=1` from the module and leave those lines to it; the
+  other notes (where the voice moved, the spoken "got it") still print as before.
 - Claude Code: a voice strip above the prompt while a conversation is on. It shows the phase, a
   level meter, the last line heard or spoken, and mute, voice, stop and "talk here" buttons. It
   works in any terminal, so KDE, macOS and SSH sessions get an indicator in the session itself.

@@ -6,6 +6,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Phase, Strip } from '../types'
+import { AGENT, registerRows, USER } from './rows'
 
 const IDLE: Strip = {
   connected: false,
@@ -19,8 +20,6 @@ const IDLE: Strip = {
 }
 const strip = atom({ plugin: 'parlar', key: 'strip' } as const, IDLE)
 
-const USER = '#5fafff'
-const AGENT = '#ffaf00'
 const BARS = '▁▂▃▄▅▆▇█'
 const METER = 8
 // level events come at 30 Hz; the terminal redraws at this pace at most
@@ -166,9 +165,12 @@ async function pollFocus($: EngineInterface) {
 }
 
 export const register: Register = on => {
+  registerRows(on)
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     if (!e.isInteractive) return started
+    // the hooks started from now on leave the heard and spoken lines to rows.tsx
+    await $.env.set('PARLAR_ROWS', '1')
     live.session = await $.session.id()
     const root = $.plugin.root
     live.bin = root.includes('\\') ? 'parlar' : `${root}/bin/parlar`
