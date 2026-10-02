@@ -17,6 +17,9 @@ const SAY = 'mcp__plugin_parlar_parlar__say'
 const WAKE = 'The user spoke to you by voice:'
 const ACTIVATED = 'Voice mode is on.'
 const NOT_SPOKEN = 'Not spoken'
+// what mcp.rs and hook.rs put ahead of utterances in a tool result: any other tool's output is
+// the tool's own, even when it quotes a delivery
+const RESULT_CUES = ['The user said meanwhile:', 'The user asked you to stop']
 // rows kept per session; older ones fall back to the engine's drawing
 const KEEP = 300
 
@@ -80,13 +83,15 @@ function linesOf(c: Call, r: Rows) {
   return out
 }
 
-type Appended = { door: string; origin: { kind: string }; uuid: string; message: unknown }
+type Appended = { door: string; origin: { kind: string }; uuid: string; message: unknown; agentId?: string }
 type Note = { kind: keyof Rows; key: string; heard: string[] }
 
 /** What one appended row tells about which row delivered which utterances. */
 export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCall: string } {
   const m = e.message as { name?: string; content?: string | Block[] }
   const notes: Note[] = []
+  // speech goes to the main thread; a subagent's rows would move lastCall off it
+  if (e.agentId) return { notes, lastCall }
   if (e.door === 'prompt' && e.origin.kind === 'task-notification') {
     const text = textOf(m.content)
     if (text.includes(WAKE)) notes.push({ kind: 'wakes', key: e.uuid, heard: heardIn(text.slice(text.indexOf(WAKE))) })
@@ -95,7 +100,9 @@ export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCal
     for (const b of m.content) {
       if (b.type !== 'tool_result' || !b.tool_use_id) continue
       lastCall = b.tool_use_id
-      notes.push({ kind: 'calls', key: b.tool_use_id, heard: heardIn(textOf(b.content)) })
+      const text = textOf(b.content)
+      const cue = RESULT_CUES.map(c => text.indexOf(c)).find(i => i >= 0)
+      if (cue !== undefined) notes.push({ kind: 'calls', key: b.tool_use_id, heard: heardIn(text.slice(cue)) })
     }
   }
   if (e.door === 'hook-context' && m.name === 'hook_additional_context') {

@@ -56,6 +56,29 @@ test('notesOf maps wakes, tool results and hook context to their rows', () => {
     result.lastCall,
   )
   expect(context.notes).toEqual([{ kind: 'calls', key: 'b1', heard: ['stop'] }])
+  // a tool that prints a delivery is not one
+  const quoted = notesOf(
+    {
+      door: 'tool-result',
+      origin: { kind: 'tool' },
+      uuid: 'r-3',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'log: [voice u9] hello' }] },
+    },
+    '',
+  )
+  expect(quoted.notes).toEqual([])
+  // nor is a subagent's row, which leaves the main thread's last call alone
+  const sub = notesOf(
+    {
+      door: 'tool-result',
+      origin: { kind: 'tool' },
+      uuid: 'r-4',
+      agentId: 'a1',
+      message: { content: [{ type: 'tool_result', tool_use_id: 's1', content: 'ok' }] },
+    },
+    'b1',
+  )
+  expect(sub).toEqual({ notes: [], lastCall: 'b1' })
 })
 
 test('a voice wake row draws what was heard', async ($, on) => {
