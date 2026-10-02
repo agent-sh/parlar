@@ -35,6 +35,10 @@ const METER = 8
 // level events come at 30 Hz; the terminal redraws at this pace at most
 const FRAME_MS = 125
 const CAPTION_MS = 15_000
+// the longest phase word ('connecting'), so the line does not shift between phases
+const WORD_WIDTH = 10
+// below this many columns the strip drops its voice and pane buttons
+const NARROW = 90
 const FLARE_MS = 1_200
 
 const WORDS: Record<Phase, string> = {
@@ -399,50 +403,80 @@ export const register: Register = on => {
     const word = s.muted ? 'mic muted' : WORDS[s.phase]
     const metering = s.phase === 'listening' || s.phase === 'interrupting' || s.phase === 'speaking'
     const who = s.caption?.who === 'user' ? 'you' : 'agent'
+    // the engine draws its collapse mark in the last columns
+    const width = Math.max(20, e.props.bodyColumns - 4)
+    // a narrow terminal keeps mute and stop; voice on or off stays in the pane (/parlar)
+    const roomy = width >= NARROW
 
     return (
       <Box flexDirection="column">
-        {/* the engine draws its collapse mark in the last columns */}
-        <Box flexDirection="row" gap={1} width={Math.max(20, e.props.bodyColumns - 4)}>
-          <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused}>
-            {s.focused ? '●' : '○'} voice {word}
-          </Text>
-          {metering && s.levels.length > 0 && <Text color={talking}>{meter(s.levels)}</Text>}
-          {!s.focused && <Text dimColor>not focused here</Text>}
-          {s.voiceOff && <Text dimColor>captions only</Text>}
-          {s.focused && s.caption && (
-            <Box flexGrow={1} flexShrink={1}>
-              <Text dimColor wrap="truncate-end">
-                {who}: {s.caption.text}
+        <Box flexDirection="row" gap={1} width={width}>
+          {/* fixed widths and no wrapping: the strip stays one line, and its parts do not shift
+              as the phase and the meter change */}
+          <Box flexShrink={0}>
+            <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused} wrap="truncate-end">
+              {s.focused ? '●' : '○'} voice {word.padEnd(WORD_WIDTH)}
+            </Text>
+          </Box>
+          {metering && (
+            <Box flexShrink={0}>
+              <Text color={talking} wrap="truncate-end">
+                {meter(s.levels).padEnd(METER)}
               </Text>
             </Box>
           )}
           {!s.focused && (
-            // talk attaches a session that started before parlard, which focus alone cannot
-            <Button
-              key="focus"
-              label="talk here"
-              hotkey="t"
-              plain
-              onPress={() => ctl($, 'talk', '--session', live.session)}
-            />
+            <Box flexShrink={0}>
+              <Text dimColor wrap="truncate-end">
+                not focused here
+              </Text>
+            </Box>
           )}
-          <Button
-            key="mute"
-            label={s.muted ? 'unmute' : 'mute'}
-            hotkey="m"
-            plain
-            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
-          />
-          <Button
-            key="voice"
-            label={s.voiceOff ? 'voice on' : 'voice off'}
-            hotkey="v"
-            plain
-            onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
-          />
-          <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
-          <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />
+          {s.voiceOff && (
+            <Box flexShrink={0}>
+              <Text dimColor wrap="truncate-end">
+                captions only
+              </Text>
+            </Box>
+          )}
+          {/* the caption takes what is left; a long one keeps its last words */}
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            {s.focused && s.caption && (
+              <Text dimColor wrap="truncate-start">
+                {who}: {s.caption.text}
+              </Text>
+            )}
+          </Box>
+          <Box flexShrink={0} gap={1}>
+            {!s.focused && (
+              // talk attaches a session that started before parlard, which focus alone cannot
+              <Button
+                key="focus"
+                label="talk here"
+                hotkey="t"
+                plain
+                onPress={() => ctl($, 'talk', '--session', live.session)}
+              />
+            )}
+            <Button
+              key="mute"
+              label={s.muted ? 'unmute' : 'mute'}
+              hotkey="m"
+              plain
+              onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+            />
+            {roomy && (
+              <Button
+                key="voice"
+                label={s.voiceOff ? 'voice on' : 'voice off'}
+                hotkey="v"
+                plain
+                onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
+              />
+            )}
+            <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
+            {roomy && <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />}
+          </Box>
         </Box>
         {below}
       </Box>

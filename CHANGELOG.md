@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Claude Code strip: it stays one line. The phase word and meter keep a fixed width, a long
+  caption shows its last words instead of its first, and below 90 columns the voice and pane
+  buttons drop out.
 - parlard no longer hears its own voice as the user on laptop speakers. Its echo there drives the
   mic past full scale, which no echo canceller can undo; while that happens, parlard ignores the
   mic for the rest of the line and its echo tail, and says once that talking over it needs a lower
