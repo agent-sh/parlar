@@ -222,6 +222,11 @@ module sets `PARLAR_ROWS=1` for the hooks it starts; `parlar hook` then asks the
 transcript with `rows: true`, which drops the heard and spoken lines and returns the rest. ctrl+o
 shows the engine's own rows. Rows from before a resume draw as the engine draws them.
 
+Voice pane (`/parlar`, or `p` on the strip): the strip's captions while this session has focus
+(200 lines), the sessions from the focus poll with "talk there" (`parlar ctl focus`), and the
+devices from `parlar ctl devices`, one button each, deduplicated by name and capped at 6 per kind
+(plain ALSA lists one card many times). Buttons rather than Select, which not every surface has.
+
 ## 9. Session focus
 
 - Every attached session registers with its harness, cwd and session id (SessionStart hook, and

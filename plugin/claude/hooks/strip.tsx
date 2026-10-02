@@ -1,11 +1,12 @@
 // The voice strip above the prompt: what parlard is doing, the last line heard or spoken, and
-// buttons for mute, voice, stop and focus. It follows `parlar ctl watch` and draws nothing while
+// buttons for mute, voice, stop and focus. /parlar (or the strip's pane button) opens the voice
+// pane: the conversation so far, the sessions to talk to, and the mic and speaker. It follows `parlar ctl watch` and draws nothing while
 // the conversation is off or parlard is not running. The command hooks in hooks.json carry the
 // conversation itself; this module only shows it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Phase, Strip } from '../types'
+import type { Device, HistoryLine, Panel, Phase, SessionRow, Strip } from '../types'
 import { AGENT, registerRows, USER } from './rows'
 
 const IDLE: Strip = {
@@ -19,6 +20,15 @@ const IDLE: Strip = {
   flare: false,
 }
 const strip = atom({ plugin: 'parlar', key: 'strip' } as const, IDLE)
+const panel = atom(
+  { plugin: 'parlar', key: 'panel' } as const,
+  { history: [], sessions: [], devices: null } as Panel,
+)
+
+const PANE = 'parlar'
+// lines the pane keeps, and devices it lists per kind
+const HISTORY = 200
+const DEVICES = 6
 
 const BARS = '▁▂▃▄▅▆▇█'
 const METER = 8
@@ -74,9 +84,17 @@ async function refreshFocus($: EngineInterface) {
   const r = await $.process.run([live.bin, 'ctl', 'state'], { timeoutMs: 2_000 }).catch(() => undefined)
   if (!r || r.exitCode !== 0) return
   try {
-    const st = JSON.parse(r.stdout) as { sessions?: { session?: string; focused: boolean }[] }
-    const focused = st.sessions?.some(s => s.session === live.session && s.focused) ?? false
+    const st = JSON.parse(r.stdout) as { sessions?: Partial<SessionRow>[] }
+    const sessions = (st.sessions ?? []).flatMap(s =>
+      s.session
+        ? [{ session: s.session, cwd: s.cwd ?? '', harness: s.harness ?? '', focused: s.focused === true }]
+        : [],
+    )
+    const focused = sessions.some(s => s.session === live.session && s.focused)
     if (focused !== (await read($, strip)).focused) await set($, { focused })
+    if (JSON.stringify(sessions) !== JSON.stringify((await read($, panel)).sessions)) {
+      await update($, panel, p => ({ ...p, sessions }))
+    }
   } catch {
     // a daemon mid-restart can answer half a line; the next poll reads it again
   }
@@ -110,10 +128,15 @@ async function apply($: EngineInterface, ev: Event, now: number) {
         await set($, { flare: true })
       }
       return
-    case 'caption':
+    case 'caption': {
       live.captionAt = now
       await set($, { caption: { who: ev.who, text: ev.text } })
+      // captions are the focused session's conversation
+      if (!(await read($, strip)).focused) return
+      const line: HistoryLine = { who: ev.who === 'user' ? 'you' : 'parlar', text: ev.text }
+      await update($, panel, p => ({ ...p, history: [...p.history, line].slice(-HISTORY) }))
       return
+    }
   }
 }
 
@@ -159,6 +182,32 @@ async function frame($: EngineInterface) {
   if (Object.keys(patch).length > 0) await set($, patch)
 }
 
+async function refreshDevices($: EngineInterface) {
+  const r = await $.process.run([live.bin, 'ctl', 'devices'], { timeoutMs: 5_000 }).catch(() => undefined)
+  if (!r || r.exitCode !== 0) return
+  try {
+    const d = JSON.parse(r.stdout) as { inputs?: Device[]; outputs?: Device[] }
+    await update($, panel, p => ({ ...p, devices: { inputs: d.inputs ?? [], outputs: d.outputs ?? [] } }))
+  } catch {
+    // an answer this build cannot read leaves the pickers as they were
+  }
+}
+
+async function openPane($: EngineInterface) {
+  const placed = await $.ui.open({ id: PANE, title: 'Voice' })
+  await Promise.all([refreshFocus($), refreshDevices($)])
+  return placed
+}
+
+async function pickDevice($: EngineInterface, kind: 'input' | 'output', id: string) {
+  await ctl($, kind, id)
+  await refreshDevices($)
+}
+
+function folder(cwd: string) {
+  return cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd
+}
+
 async function pollFocus($: EngineInterface) {
   const s = await read($, strip)
   if (s.connected && s.phase !== 'stopped') await refreshFocus($)
@@ -183,7 +232,121 @@ export const register: Register = on => {
     $.clock.every(FRAME_MS, () => void frame($).catch(quiet))
     // focus moves with typing in another session, which sends no event here
     $.clock.every(2_000, () => void pollFocus($).catch(quiet))
+    await $.command.register({
+      name: 'parlar',
+      description: 'Open the voice pane: the conversation, the sessions, the mic and speaker',
+      immediate: true,
+    })
     return started
+  })
+
+  on('command.run', { command: 'parlar' }, async $ => {
+    const { isPlaced } = await openPane($)
+    return { text: isPlaced ? 'Voice pane opened.' : 'The voice pane will open when there is room.' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const s = await read($, strip)
+    const p = await read($, panel)
+    const room = Math.max(3, (e.viewport?.rows ?? 24) - 12 - p.sessions.length)
+    const others = p.sessions.filter(x => x.session !== live.session)
+    const here = p.sessions.find(x => x.session === live.session)
+    const word = !s.connected ? 'parlard is not running' : s.muted ? 'mic muted' : WORDS[s.phase]
+    // one Button per device, so every surface can pick (Select is not on all of them). Plain ALSA
+    // lists one card many times: one entry per name, the current one first, at most DEVICES
+    const devices = (kind: 'input' | 'output', title: string, list: Device[]) => {
+      const named = list.filter((d, i) => d.current || list.findIndex(x => x.name === d.name) === i)
+      const shown = [...named.filter(d => d.current), ...named.filter(d => !d.current)].slice(0, DEVICES)
+      return (
+        <Box flexDirection="column">
+          <Text bold>{title}</Text>
+          {shown.map(d =>
+            d.current ? (
+              <Text>● {d.name}</Text>
+            ) : (
+              <Button
+                key={`${kind}-${d.id}`}
+                label={`○ ${d.name}`}
+                plain
+                onPress={() => pickDevice($, kind, d.id)}
+              />
+            ),
+          )}
+          {named.length > shown.length && (
+            <Text dimColor>
+              {named.length - shown.length} more: parlar ctl devices, then parlar ctl {kind} {'<id>'}
+            </Text>
+          )}
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text bold color={s.focused ? USER : undefined}>
+          {s.focused ? '●' : '○'} voice {word}
+          {s.connected && !s.focused ? ', not focused here' : ''}
+        </Text>
+        <Box flexDirection="column">
+          <Text bold>Conversation</Text>
+          {p.history.length === 0 && <Text dimColor>Nothing said yet.</Text>}
+          {p.history.slice(-room).map(l => (
+            <Text color={l.who === 'you' ? USER : AGENT} wrap="wrap">
+              {l.who} ▸ {l.text}
+            </Text>
+          ))}
+        </Box>
+        <Box flexDirection="column">
+          <Text bold>Sessions</Text>
+          {here && (
+            <Text>
+              {here.focused ? '●' : '○'} {folder(here.cwd)} (this one)
+            </Text>
+          )}
+          {!here && s.connected && (
+            <Button
+              key="attach"
+              label="talk here"
+              onPress={() => ctl($, 'talk', '--session', live.session)}
+            />
+          )}
+          {others.map(o => (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor={!o.focused}>
+                {o.focused ? '●' : '○'} {folder(o.cwd)} {o.harness}
+              </Text>
+              {!o.focused && (
+                <Button
+                  key={`focus-${o.session}`}
+                  label="talk there"
+                  plain
+                  onPress={() => ctl($, 'focus', o.session)}
+                />
+              )}
+            </Box>
+          ))}
+        </Box>
+        {p.devices && devices('input', 'Mic', p.devices.inputs)}
+        {p.devices && devices('output', 'Speaker', p.devices.outputs)}
+        <Box flexDirection="row" gap={1}>
+          <Button
+            key="pane-mute"
+            label={s.muted ? 'unmute' : 'mute'}
+            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+          />
+          <Button
+            key="pane-voice"
+            label={s.voiceOff ? 'voice on' : 'voice off'}
+            onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
+          />
+          <Button
+            key="pane-power"
+            label={s.connected && s.phase !== 'stopped' ? 'stop' : 'start'}
+            onPress={() => ctl($, s.connected && s.phase !== 'stopped' ? 'off' : 'on')}
+          />
+        </Box>
+      </Box>
+    )
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -248,6 +411,7 @@ export const register: Register = on => {
             onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
           />
           <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
+          <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />
         </Box>
         {below}
       </Box>
