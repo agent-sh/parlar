@@ -137,6 +137,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'open-input' })
     expect(await ui.find({ type: 'Text', text: /● System default/ })).toBeDefined()
     await ui.press({ key: 'input-in-headset' })
+    // the status line carries the controls, so a muted or idle session can still be clicked
+    await ui.press({ key: 'pane-mute' })
+    expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'mute'])
     expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'input', 'in-headset'])
     await ui.unmount()
     d.release()

@@ -354,6 +354,7 @@ export const register: Register = on => {
     const here = p.sessions.find(x => x.session === live.session)
     const word = !s.connected ? 'parlard is not running' : s.muted ? 'mic muted' : WORDS[s.phase]
     const focusedName = p.sessions.find(x => x.focused)
+    const conversing = s.connected && s.phase !== 'stopped'
     // plain ALSA lists one card many times: one entry per name, the current one first
     const named = (list: Device[]) => {
       const one = list.filter((d, i) => d.current || list.findIndex(x => x.name === d.name) === i)
@@ -394,9 +395,37 @@ export const register: Register = on => {
     const room = Math.max(3, (e.viewport?.rows ?? 24) - 8 - opened)
     return (
       <Box flexDirection="column">
-        <Text bold color={s.focused ? USER : undefined}>
-          {s.focused ? '●' : '○'} voice {word}
-        </Text>
+        {/* the one place with every control in every state (idle, muted, stopped), on the
+            status line itself so the pane stays the conversation */}
+        <Box flexDirection="row" gap={2}>
+          <Text bold color={s.focused ? USER : undefined}>
+            {s.focused ? '●' : '○'} voice {word}
+          </Text>
+          {conversing && (
+            <Button
+              key="pane-mute"
+              label={s.muted ? 'unmute' : 'mute'}
+              plain
+              onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+            />
+          )}
+          {conversing && (
+            <Button
+              key="pane-voice"
+              label={s.voiceOff ? 'voice on' : 'voice off'}
+              plain
+              onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
+            />
+          )}
+          {s.connected && (
+            <Button
+              key="pane-power"
+              label={conversing ? 'stop' : 'start'}
+              plain
+              onPress={() => ctl($, conversing ? 'off' : 'on')}
+            />
+          )}
+        </Box>
         {header('sessions', 'Talking to', focusedName ? folder(focusedName.cwd) : 'nobody')}
         {p.open === 'sessions' && (
           <Box flexDirection="column">
