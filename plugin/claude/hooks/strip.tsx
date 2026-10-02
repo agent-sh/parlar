@@ -6,7 +6,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Device, HistoryLine, Panel, Phase, Rows, SessionRow, Strip } from '../types'
+import type { Device, HistoryLine, Panel, Phase, Rows, Section, SessionRow, Strip } from '../types'
 import { AGENT, registerRows, USER, withNote } from './rows'
 
 const IDLE: Strip = {
@@ -51,7 +51,7 @@ const CELLS = {
   mute: 1 + 9,
   voice: 1 + 12,
   stop: 1 + 7,
-  pane: 1 + 7,
+  pane: 1 + 13,
 }
 
 /** What fits in `width`: mute and stop always (and talk here off focus), the rest by priority. */
@@ -112,6 +112,8 @@ const live = {
   flareAt: 0,
   // set once the watch has seen parlard, so the first connect of a session raises no toast
   seen: false,
+  // the voice pane is open, so its button closes it
+  paneOpen: false,
 }
 
 function set($: EngineInterface, patch: Partial<Strip>) {
@@ -268,14 +270,32 @@ async function refreshDevices($: EngineInterface) {
 }
 
 async function openPane($: EngineInterface) {
+  live.paneOpen = true
+  await set($, { paneOpen: true })
   const placed = await $.ui.open({ id: PANE, title: 'Voice' })
   await Promise.all([refreshFocus($), refreshDevices($)])
   return placed
 }
 
+/** The pane button: opens the pane, or closes it when it is open. */
+async function togglePane($: EngineInterface) {
+  if (!live.paneOpen) return void (await openPane($))
+  live.paneOpen = false
+  await set($, { paneOpen: false })
+  await $.ui.close({ id: PANE })
+}
+
 async function pickDevice($: EngineInterface, kind: 'input' | 'output', id: string) {
   await ctl($, kind, id)
+  await update($, panel, p => ({ ...p, open: null }))
   await refreshDevices($)
+}
+
+/** Give a session voice focus from the pane; this one is attached first if parlard lacks it. */
+async function talkTo($: EngineInterface, session: string, here: boolean) {
+  await (here ? ctl($, 'talk', '--session', session) : ctl($, 'focus', session))
+  await update($, panel, p => ({ ...p, open: null }))
+  await refreshFocus($)
 }
 
 function folder(cwd: string) {
@@ -314,6 +334,16 @@ export const register: Register = on => {
     return started
   })
 
+  // closed by the person (its mark, Esc) or an unload: the button opens it next time
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
+    if (e.id === PANE) {
+      live.paneOpen = false
+      await set($, { paneOpen: false })
+    }
+    return closed
+  })
+
   on('command.run', { command: 'parlar' }, async $ => {
     const { isPlaced } = await openPane($)
     return { text: isPlaced ? 'Voice pane opened.' : 'The voice pane will open when there is room.' }
@@ -323,102 +353,105 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, strip)
     const p = await read($, panel)
-    const room = Math.max(3, (e.viewport?.rows ?? 24) - 12 - p.sessions.length)
     const others = p.sessions.filter(x => x.session !== live.session)
     const here = p.sessions.find(x => x.session === live.session)
     const word = !s.connected ? 'parlard is not running' : s.muted ? 'mic muted' : WORDS[s.phase]
-    // one Button per device, so every surface can pick (Select is not on all of them). Plain ALSA
-    // lists one card many times: one entry per name, the current one first, at most DEVICES
-    const devices = (kind: 'input' | 'output', title: string, list: Device[]) => {
-      const named = list.filter((d, i) => d.current || list.findIndex(x => x.name === d.name) === i)
-      const shown = [...named.filter(d => d.current), ...named.filter(d => !d.current)].slice(0, DEVICES)
-      return (
-        <Box flexDirection="column">
-          <Text bold>{title}</Text>
-          {shown.map(d =>
-            d.current ? (
-              <Text>● {d.name}</Text>
-            ) : (
-              <Button
-                key={`${kind}-${d.id}`}
-                label={`○ ${d.name}`}
-                plain
-                onPress={() => pickDevice($, kind, d.id)}
-              />
-            ),
-          )}
-          {named.length > shown.length && (
-            <Text dimColor>
-              {named.length - shown.length} more: parlar ctl devices, then parlar ctl {kind} {'<id>'}
-            </Text>
-          )}
-        </Box>
-      )
+    const focusedName = p.sessions.find(x => x.focused)
+    // plain ALSA lists one card many times: one entry per name, the current one first
+    const named = (list: Device[]) => {
+      const one = list.filter((d, i) => d.current || list.findIndex(x => x.name === d.name) === i)
+      return [...one.filter(d => d.current), ...one.filter(d => !d.current)].slice(0, DEVICES)
     }
+    const inputs = named(p.devices?.inputs ?? [])
+    const outputs = named(p.devices?.outputs ?? [])
+    const current = (list: Device[]) => list.find(d => d.current)?.name ?? 'none'
+    // one line per section until clicked open; picking closes it again
+    const header = (key: Section, title: string, value: string) => (
+      <Button
+        key={`open-${key}`}
+        label={`${p.open === key ? '▾' : '▸'} ${title}: ${value}`}
+        plain
+        onPress={() => update($, panel, x => ({ ...x, open: x.open === key ? null : key }))}
+      />
+    )
+    const pick = (kind: 'input' | 'output', d: Device) =>
+      d.current ? (
+        <Text> ● {d.name}</Text>
+      ) : (
+        <Button
+          key={`${kind}-${d.id}`}
+          label={`  ○ ${d.name}`}
+          plain
+          onPress={() => pickDevice($, kind, d.id)}
+        />
+      )
+    const opened =
+      p.open === 'sessions'
+        ? 1 + others.length
+        : p.open === 'input'
+          ? inputs.length
+          : p.open === 'output'
+            ? outputs.length
+            : 0
+    // the conversation takes what the header lines and an open section leave
+    const room = Math.max(3, (e.viewport?.rows ?? 24) - 8 - opened)
     return (
-      <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
         <Text bold color={s.focused ? USER : undefined}>
           {s.focused ? '●' : '○'} voice {word}
-          {s.connected && !s.focused ? ', not focused here' : ''}
         </Text>
-        <Box flexDirection="column">
-          <Text bold>Conversation</Text>
+        {header('sessions', 'Talking to', focusedName ? folder(focusedName.cwd) : 'nobody')}
+        {p.open === 'sessions' && (
+          <Box flexDirection="column">
+            {here && (
+              <Box flexDirection="row" gap={1}>
+                <Text>
+                  {' '}
+                  {here.focused ? '●' : '○'} {folder(here.cwd)} (this one)
+                </Text>
+                {!here.focused && (
+                  <Button
+                    key="attach"
+                    label="talk here"
+                    plain
+                    onPress={() => talkTo($, live.session, true)}
+                  />
+                )}
+              </Box>
+            )}
+            {!here && s.connected && (
+              // talk attaches this session if parlard does not know it yet, then focuses it
+              <Button key="attach" label="  talk here" plain onPress={() => talkTo($, live.session, true)} />
+            )}
+            {others.map(o => (
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor={!o.focused}>
+                  {'  '}
+                  {o.focused ? '●' : '○'} {folder(o.cwd)} {o.harness}
+                </Text>
+                {!o.focused && (
+                  <Button
+                    key={`focus-${o.session}`}
+                    label="talk there"
+                    plain
+                    onPress={() => talkTo($, o.session, false)}
+                  />
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
+        {p.devices && header('input', 'Mic', current(inputs))}
+        {p.open === 'input' && <Box flexDirection="column">{inputs.map(d => pick('input', d))}</Box>}
+        {p.devices && header('output', 'Speaker', current(outputs))}
+        {p.open === 'output' && <Box flexDirection="column">{outputs.map(d => pick('output', d))}</Box>}
+        <Box flexDirection="column" marginTop={1}>
           {p.history.length === 0 && <Text dimColor>Nothing said yet.</Text>}
           {p.history.slice(-room).map(l => (
             <Text color={l.who === 'you' ? USER : AGENT} wrap="wrap">
               {l.who} ▸ {l.text}
             </Text>
           ))}
-        </Box>
-        <Box flexDirection="column">
-          <Text bold>Sessions</Text>
-          {here && (
-            <Text>
-              {here.focused ? '●' : '○'} {folder(here.cwd)} (this one)
-            </Text>
-          )}
-          {s.connected && !here?.focused && (
-            // talk attaches this session if parlard does not know it yet, then focuses it
-            <Button
-              key="attach"
-              label="talk here"
-              onPress={() => ctl($, 'talk', '--session', live.session)}
-            />
-          )}
-          {others.map(o => (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor={!o.focused}>
-                {o.focused ? '●' : '○'} {folder(o.cwd)} {o.harness}
-              </Text>
-              {!o.focused && (
-                <Button
-                  key={`focus-${o.session}`}
-                  label="talk there"
-                  plain
-                  onPress={() => ctl($, 'focus', o.session)}
-                />
-              )}
-            </Box>
-          ))}
-        </Box>
-        {p.devices && devices('input', 'Mic', p.devices.inputs)}
-        {p.devices && devices('output', 'Speaker', p.devices.outputs)}
-        <Box flexDirection="row" gap={1}>
-          <Button
-            key="pane-mute"
-            label={s.muted ? 'unmute' : 'mute'}
-            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
-          />
-          <Button
-            key="pane-voice"
-            label={s.voiceOff ? 'voice on' : 'voice off'}
-            onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
-          />
-          <Button
-            key="pane-power"
-            label={s.connected && s.phase !== 'stopped' ? 'stop' : 'start'}
-            onPress={() => ctl($, s.connected && s.phase !== 'stopped' ? 'off' : 'on')}
-          />
         </Box>
       </Box>
     )
@@ -463,7 +496,12 @@ export const register: Register = on => {
             onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
           />
           <Button key="spin-stop" label="stop" plain onPress={() => ctl($, 'off')} />
-          <Button key="spin-pane" label="pane" plain onPress={() => openPane($)} />
+          <Button
+            key="spin-pane"
+            label={s.paneOpen ? 'close pane' : 'pane'}
+            plain
+            onPress={() => togglePane($)}
+          />
         </Box>
       </Box>
     )
@@ -563,7 +601,15 @@ export const register: Register = on => {
               />
             )}
             <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
-            {fit.pane && <Button key="pane" label="pane" hotkey="p" plain onPress={() => openPane($)} />}
+            {fit.pane && (
+              <Button
+                key="pane"
+                label={s.paneOpen ? 'close pane' : 'pane'}
+                hotkey="p"
+                plain
+                onPress={() => togglePane($)}
+              />
+            )}
           </Box>
         </Box>
         {below}

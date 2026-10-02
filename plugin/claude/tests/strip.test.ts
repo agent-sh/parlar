@@ -119,6 +119,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const r = await $.command.run({ command: 'parlar' } as never)
     expect(String((r as { text?: string }).text)).toMatch(/opened/)
     const ui = await $.ui.mount({ plugin: 'parlar', surface, ...PANE } as never)
+    // the sections are one line each until opened
+    expect(await ui.find({ key: 'open-sessions' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /ginza codex/ })).toBeUndefined()
+    await ui.press({ key: 'open-sessions' })
     expect(await ui.find({ type: 'Text', text: /parlar \(this one\)/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /you ▸ open the router/ })).toBeDefined()
     // a partial is not kept, and another session's line is not this conversation
@@ -126,9 +130,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /Another session/ })).toBeUndefined()
     expect(await ui.find({ key: 'attach' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /ginza codex/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /● System default/ })).toBeDefined()
     await ui.press({ key: 'focus-other-1' })
     expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'focus', 'other-1'])
+    // picking closes the section again
+    expect(await ui.find({ type: 'Text', text: /ginza codex/ })).toBeUndefined()
+    await ui.press({ key: 'open-input' })
+    expect(await ui.find({ type: 'Text', text: /● System default/ })).toBeDefined()
     await ui.press({ key: 'input-in-headset' })
     expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'input', 'in-headset'])
     await ui.unmount()
@@ -143,6 +150,7 @@ test('the pane offers talk here when this session lost focus', async ($, on) => 
   await clock.advance(2_000)
   await $.command.run({ command: 'parlar' } as never)
   const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...PANE } as never)
+  await ui.press({ key: 'open-sessions' })
   await ui.press({ key: 'attach' })
   expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'talk', '--session', SESSION])
   await ui.unmount()
@@ -261,5 +269,25 @@ test('while nobody talks the strip leaves its line and rides the spinner and the
   const hint = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...HINT } as never)
   expect(tail).toMatch(/● voice ready · \/parlar/)
   await hint.unmount()
+  d.release()
+})
+
+test('the pane button opens the pane and closes it again', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const closed: string[] = []
+  on('ui.close', async ($, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
+  const d = daemon(on, [{ ui: 'phase', phase: 'listening', mic_muted: false, voice_off: false }], true)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  const band = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
+  await band.press({ key: 'pane' })
+  expect((await band.find({ key: 'pane' }))?.text).toMatch(/close pane/)
+  await band.press({ key: 'pane' })
+  expect(closed).toContain('parlar')
+  expect(await band.find({ key: 'mute' })).toBeDefined()
+  await band.unmount()
   d.release()
 })
