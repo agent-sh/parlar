@@ -73,6 +73,9 @@ export function fits(width: number, s: { focused: boolean; voiceOff: boolean }, 
 }
 const FLARE_MS = 1_200
 
+// the phases in which someone is talking: the strip takes its own line only then
+const TALKING: ReadonlySet<Phase> = new Set(['listening', 'interrupting', 'speaking'])
+
 const WORDS: Record<Phase, string> = {
   stopped: 'off',
   connecting: 'connecting',
@@ -428,6 +431,53 @@ export const register: Register = on => {
     return r
   })
 
+  // while a turn runs and nobody talks: a voice mark and the buttons after Claude's own spinner.
+  // The spinner's row takes no keys, so its buttons are for the pointer and carry no hotkeys;
+  // /parlar opens the pane for the keyboard
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    const s = await read($, strip)
+    const spinner = await next(e)
+    if (!s.connected || s.phase === 'stopped' || TALKING.has(s.phase)) return spinner
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      // the engine's spinner opens with a blank row and may end with a tip: the controls sit on its
+      // second row, the spinner's own text
+      <Box flexDirection="row" gap={2}>
+        {spinner}
+        <Box flexDirection="row" gap={1} flexShrink={0} marginTop={1}>
+          <Text color={s.muted ? undefined : AGENT} dimColor>
+            {s.focused ? '●' : '○'} {s.muted ? 'mic muted' : 'voice'}
+          </Text>
+          {!s.focused && (
+            <Button
+              key="spin-focus"
+              label="talk here"
+              plain
+              onPress={() => ctl($, 'talk', '--session', live.session)}
+            />
+          )}
+          <Button
+            key="spin-mute"
+            label={s.muted ? 'unmute' : 'mute'}
+            plain
+            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+          />
+          <Button key="spin-stop" label="stop" plain onPress={() => ctl($, 'off')} />
+          <Button key="spin-pane" label="pane" plain onPress={() => openPane($)} />
+        </Box>
+      </Box>
+    )
+  })
+
+  // idle and nobody talks: the hint line under the prompt says the voice is there
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const s = await read($, strip)
+    if (e.props.isWorking || !s.connected || s.phase === 'stopped' || TALKING.has(s.phase)) return next(e)
+    const mark = s.focused ? '●' : '○'
+    const state = s.muted ? 'mic muted' : s.focused ? 'voice ready' : 'voice in another session'
+    return next({ ...e, props: { ...e.props, tail: `${mark} ${state} · /parlar` } })
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, strip)
     if (e.props.hasSurvey || !s.connected || s.phase === 'stopped') return next(e)
@@ -443,6 +493,8 @@ export const register: Register = on => {
     // the engine draws its collapse mark in the last columns
     const width = Math.max(20, e.props.bodyColumns - 4)
     const fit = fits(width, s, metering)
+    // while nobody talks the strip gives up its line: the spinner or the hint line carries it
+    if (!metering) return below
 
     return (
       <Box flexDirection="column">

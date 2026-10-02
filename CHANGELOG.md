@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Claude Code strip: it takes a line of its own only while someone is talking. During a turn the
+  voice mark and its mute, stop and pane buttons sit at the end of Claude's own spinner line;
+  when idle the hint line under the prompt says "● voice ready · /parlar".
 - Claude Code strip: it stays one line. The phase word and meter keep a fixed width, a long
   caption shows its last words instead of its first, and the labels and buttons that do not fit
   drop out by priority (mute and stop stay).
