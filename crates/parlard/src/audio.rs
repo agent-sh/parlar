@@ -288,6 +288,11 @@ impl Mic {
         (m, Frames { rx, rate: MIC_RATE })
     }
 
+    /// Have the supervisor open the mic again, with its backoff: for a mic that failed to open.
+    pub fn reopen_later(&self) {
+        MIC_STALE.store(true, Ordering::SeqCst);
+    }
+
     pub fn current(&self) -> Option<String> {
         self.running.lock().unwrap().as_ref().map(|r| r.id.clone()).or_else(|| self.chosen.lock().unwrap().clone())
     }
