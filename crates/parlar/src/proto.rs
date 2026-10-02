@@ -276,8 +276,28 @@ pub struct Device {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "ui", rename_all = "snake_case")]
 pub enum Ui {
-    Phase { phase: Phase, mic_muted: bool, voice_off: bool },
-    Levels { user: f32, agent: f32 },
-    Tool { ok: bool, name: Option<String> },
-    Caption { who: String, text: String },
+    Phase {
+        phase: Phase,
+        mic_muted: bool,
+        voice_off: bool,
+    },
+    Levels {
+        user: f32,
+        agent: f32,
+    },
+    Tool {
+        ok: bool,
+        name: Option<String>,
+    },
+    Caption {
+        who: String,
+        text: String,
+        /// The session the line belongs to: the one heard for, or the one that spoke. None for
+        /// parlar's own lines and for partials, which belong to whoever has focus.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        /// A recognizer partial: the words so far, replaced by the next caption.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        partial: bool,
+    },
 }

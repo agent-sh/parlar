@@ -16,6 +16,23 @@ export type Strip = {
   flare: boolean
 }
 
+/** One line of the conversation as the pane lists it. */
+export type HistoryLine = { who: 'you' | 'parlar'; text: string }
+
+/** A session parlard knows, as `parlar ctl state` lists it. */
+export type SessionRow = { session: string; cwd: string; harness: string; focused: boolean }
+
+/** An audio device, as `parlar ctl devices` lists it. */
+export type Device = { id: string; name: string; current: boolean }
+
+/** What the voice pane draws. */
+export type Panel = {
+  /** The conversation heard and spoken while this session had focus, oldest first. */
+  history: HistoryLine[]
+  sessions: SessionRow[]
+  devices: { inputs: Device[]; outputs: Device[] } | null
+}
+
 /** Utterances by the transcript row that delivered them, for drawing that row. */
 export type Rows = {
   /** By the uuid of a voice wake's user row. */
@@ -26,6 +43,6 @@ export type Rows = {
 
 declare module 'claude-code' {
   interface PluginState {
-    parlar: { strip: Strip; rows: Rows }
+    parlar: { strip: Strip; rows: Rows; panel: Panel }
   }
 }

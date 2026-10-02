@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Claude Code: `/parlar` (or `p` on the strip) opens the voice pane: the conversation heard and
+  spoken while the session had focus, the sessions parlard knows with "talk there" for each, mic
+  and speaker pickers, and mute, voice and start or stop.
 - Claude Code: the spoken exchange draws as clean "you" and "parlar" lines in the transcript, on
   the row that carried it, in place of "PostToolUse:... says" hook messages. The voice wake row
   shows what was heard. Hooks see `PARLAR_ROWS=1` from the module and leave those lines to it; the

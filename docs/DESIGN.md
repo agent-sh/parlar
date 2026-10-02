@@ -220,7 +220,13 @@ noted at `session.append`), a say result ("the user said meanwhile"), or the too
 PostToolUse context carried it (the last tool result appended before that context row). The
 module sets `PARLAR_ROWS=1` for the hooks it starts; `parlar hook` then asks the daemon for the
 transcript with `rows: true`, which drops the heard and spoken lines and returns the rest. ctrl+o
-shows the engine's own rows. Rows from before a resume draw as the engine draws them.
+shows the engine's own rows. After a resume, say lines still draw from their rows' own output;
+wake rows draw as the engine draws them and PostToolUse-delivered utterances are not shown.
+
+Voice pane (`/parlar`, or `p` on the strip): the strip's captions while this session has focus
+(200 lines), the sessions from the focus poll with "talk there" (`parlar ctl focus`), and the
+devices from `parlar ctl devices`, one button each, deduplicated by name and capped at 6 per kind
+(plain ALSA lists one card many times). Buttons rather than Select, which not every surface has.
 
 ## 9. Session focus
 

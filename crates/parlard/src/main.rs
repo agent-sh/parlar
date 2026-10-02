@@ -289,7 +289,7 @@ async fn serve(cli: Cli) -> Result<()> {
                     listen::Heard::Partial(text) => {
                         eprintln!("hearing: {text}");
                         let st = state.lock().await;
-                        let _ = st.ui().send(Ui::Caption { who: "user".into(), text });
+                        let _ = st.ui().send(Ui::Caption { who: "user".into(), text, session: None, partial: true });
                     }
                     listen::Heard::BargeIn => {
                         eprintln!("barge-in");

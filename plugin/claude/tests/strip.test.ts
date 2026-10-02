@@ -13,6 +13,8 @@ function daemon(on: On, events: object[], focused: boolean) {
   on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
   on('session.id', async () => ({ value: SESSION }))
   on('env.set', async () => ({ value: undefined }))
+  on('command.register', async () => ({ value: { command: 'parlar' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true } }))
   on('process.spawn', async function* () {
     for (const ev of events) yield { stream: 'stdout' as const, text: JSON.stringify(ev) + '\n' }
     await held
@@ -20,8 +22,21 @@ function daemon(on: On, events: object[], focused: boolean) {
   })
   on('process.run', ($, e) => {
     ran.push([...e.argv])
-    const state = { sessions: [{ session: SESSION, focused }] }
-    const stdout = e.argv[2] === 'state' ? JSON.stringify(state) : '{"kind":"ok"}'
+    const state = {
+      sessions: [
+        { session: SESSION, cwd: '/w/parlar', harness: 'claude', focused },
+        { session: 'other-1', cwd: '/w/ginza', harness: 'codex', focused: !focused },
+      ],
+    }
+    const devices = {
+      inputs: [
+        { id: 'in-default', name: 'System default', current: true },
+        { id: 'in-headset', name: 'Headset', current: false },
+      ],
+      outputs: [{ id: 'out-default', name: 'System default', current: true }],
+    }
+    const answers: Record<string, object> = { state, devices }
+    const stdout = JSON.stringify(answers[e.argv[2] ?? ''] ?? { kind: 'ok' })
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return { ran, release }
@@ -68,6 +83,56 @@ test('strip draws nothing while the conversation is off', async ($, on) => {
   await clock.advance(2_000)
   const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
   expect(await ui.find({ key: 'stop' })).toBeUndefined()
+  await ui.unmount()
+  d.release()
+})
+
+const PANE = { component: 'Pane', requestId: 'parlar', props: {} } as const
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the pane lists the conversation, sessions and devices on ${surface}`, async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const d = daemon(
+      on,
+      [
+        { ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false },
+        { ui: 'caption', who: 'user', text: 'open the router', session: 'abc-123' },
+        { ui: 'caption', who: 'user', text: 'open the', partial: true },
+        { ui: 'caption', who: 'agent', text: 'Another session speaking.', session: 'other-1' },
+      ],
+      true,
+    )
+    await $.session.start({ cwd: '/w/parlar', surface, isInteractive: true })
+    await clock.advance(2_000)
+    const r = await $.command.run({ command: 'parlar' } as never)
+    expect(String((r as { text?: string }).text)).toMatch(/opened/)
+    const ui = await $.ui.mount({ plugin: 'parlar', surface, ...PANE } as never)
+    expect(await ui.find({ type: 'Text', text: /parlar \(this one\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /you ▸ open the router/ })).toBeDefined()
+    // a partial is not kept, and another session's line is not this conversation
+    expect(await ui.findAll({ type: 'Text', text: /you ▸/ })).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /Another session/ })).toBeUndefined()
+    expect(await ui.find({ key: 'attach' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /ginza codex/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /● System default/ })).toBeDefined()
+    await ui.press({ key: 'focus-other-1' })
+    expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'focus', 'other-1'])
+    await ui.press({ key: 'input-in-headset' })
+    expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'input', 'in-headset'])
+    await ui.unmount()
+    d.release()
+  })
+}
+
+test('the pane offers talk here when this session lost focus', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const d = daemon(on, [{ ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false }], false)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  await $.command.run({ command: 'parlar' } as never)
+  const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...PANE } as never)
+  await ui.press({ key: 'attach' })
+  expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'talk', '--session', SESSION])
   await ui.unmount()
   d.release()
 })
