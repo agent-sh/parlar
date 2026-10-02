@@ -350,6 +350,9 @@ impl State {
         let recent =
             self.last_heard.filter(|(_, k, at)| *k == key && at.elapsed() < CONTINUATION).map(|(prev, _, _)| prev);
         self.note(i, format!("you: {text}"), true);
+        // a finished caption for every utterance, a merged follow-up included
+        let session = self.sessions[i].session.clone();
+        let _ = self.ui.send(Ui::Caption { who: "user".into(), text: text.clone(), session, partial: false });
         // a follow-up to an utterance nobody has read yet joins it instead of trailing behind
         if let Some(prev) = recent
             && let Some(last) = self.sessions[i].pending.last_mut().filter(|u| u.id == prev)
@@ -369,8 +372,6 @@ impl State {
             if self.sessions[i].cwd.is_empty() { "session" } else { self.sessions[i].cwd.as_str() },
             u.text
         );
-        let session = self.sessions[i].session.clone();
-        let _ = self.ui.send(Ui::Caption { who: "user".into(), text: u.text.clone(), session, partial: false });
         self.sessions[i].pending.push(u);
         self.hand_over(i);
         let s = &self.sessions[i];
@@ -1625,6 +1626,8 @@ mod tests {
             Origin { session: Some("b".into()), pids: vec![1, 1002], harness_pid: Some(1002), ..Default::default() };
         d.handle(Request::Attach { origin: b.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
         d.handle(Request::Hear { text: "open the router".into(), heard: None }).await;
+        // a follow-up within seconds joins the pending utterance, and still gets its caption
+        d.handle(Request::Hear { text: "file".into(), heard: None }).await;
         // b speaks from an older turn while a has focus: its caption is b's, not a's
         d.handle(Request::Say { origin: b, text: "Still here.".into(), kind: SayKind::Answer }).await;
         d.handle(Request::Say { origin: a, text: "Opening it.".into(), kind: SayKind::Answer }).await;
@@ -1637,6 +1640,7 @@ mod tests {
         assert_eq!(
             captions,
             vec![
+                ("user".into(), Some("a".into()), false),
                 ("user".into(), Some("a".into()), false),
                 ("agent".into(), Some("b".into()), false),
                 ("agent".into(), Some("a".into()), false),
