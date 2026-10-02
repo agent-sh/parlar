@@ -20,7 +20,7 @@ export type Strip = {
 export type Rows = {
   /** By the uuid of a voice wake's user row. */
   wakes: Record<string, string[]>
-  /** By the tool call whose result or hook passed them on. */
+  /** By the tool call whose PostToolUse context passed them on. */
   calls: Record<string, string[]>
 }
 

@@ -56,18 +56,7 @@ test('notesOf maps wakes, tool results and hook context to their rows', () => {
     result.lastCall,
   )
   expect(context.notes).toEqual([{ kind: 'calls', key: 'b1', heard: ['stop'] }])
-  // a tool that prints a delivery is not one
-  const quoted = notesOf(
-    {
-      door: 'tool-result',
-      origin: { kind: 'tool' },
-      uuid: 'r-3',
-      message: { content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'log: [voice u9] hello' }] },
-    },
-    '',
-  )
-  expect(quoted.notes).toEqual([])
-  // nor is a subagent's row, which leaves the main thread's last call alone
+  // a subagent's row leaves the main thread's last call alone
   const sub = notesOf(
     {
       door: 'tool-result',
@@ -95,43 +84,39 @@ test('a voice wake row draws what was heard', async ($, on) => {
   await ui.unmount()
 })
 
-test('say calls draw as parlar lines, with what they passed on', async ($, on) => {
+test('say calls draw as parlar lines, with what their results passed on', async ($, on) => {
   engine(on)
-  await append($, {
-    door: 'tool-result',
-    origin: { kind: 'tool', tool: SAY },
-    uuid: 'r-1',
-    message: {
-      type: 'user',
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'Said.\nThe user said meanwhile:\n[voice u2] and the docs\n(Reply out loud.)' }] }],
-    },
-  })
+  const said = [{ type: 'text', text: 'Said.\nThe user said meanwhile:\n[voice u2] and the docs\n(Reply out loud.)' }]
+  const down = [{ type: 'text', text: 'Voice mode is off (parlard is not running). Continue in text.' }]
+  const base = { isRunning: false, isErrored: false, isInterrupted: false }
   const calls = [
-    { tool_use_id: 't1', tool: SAY, input: { text: 'Opening it.' }, isRunning: false, isErrored: false, isInterrupted: false },
-    {
-      tool_use_id: 't2',
-      tool: SAY,
-      input: { text: 'Nobody hears this.' },
-      output: [{ type: 'text', text: 'Not spoken: no focus' }],
-      isRunning: false,
-      isErrored: false,
-      isInterrupted: false,
-    },
+    { ...base, tool_use_id: 't1', tool: SAY, input: { text: 'Opening it.' }, output: said },
+    { ...base, tool_use_id: 't2', tool: SAY, input: { text: 'Nobody hears this.' }, output: down },
+    { ...base, tool_use_id: 't3', tool: 'Bash', input: { command: 'cat log' }, output: 'log: [voice u9] hello' },
   ]
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
       plugin: 'parlar',
       surface,
       component: 'ToolGroup',
-      props: { calls, isActive: false, isExpanded: false },
+      props: { calls: calls.slice(0, 2), isActive: false, isExpanded: false },
     } as never)
     expect(await ui.find({ type: 'Text', text: /parlar ▸ Opening it\./ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /you ▸ and the docs/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /\(not spoken\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\(Voice mode is off \(parlard is not running\)\)/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /engine/ })).toBeUndefined()
     await ui.unmount()
   }
+  // a tool that prints a delivery is not one: the engine draws the group alone
+  const ui = await $.ui.mount({
+    plugin: 'parlar',
+    surface: 'terminal',
+    component: 'ToolGroup',
+    props: { calls: calls.slice(2), isActive: false, isExpanded: false },
+  } as never)
+  expect(await ui.find({ type: 'Text', text: /engine/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /you ▸/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('a group with other calls keeps the engine summary above the lines', async ($, on) => {

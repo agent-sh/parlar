@@ -16,7 +16,8 @@ const SAY = 'mcp__plugin_parlar_parlar__say'
 // what format::utterances and the wake message in hooks.json write
 const WAKE = 'The user spoke to you by voice:'
 const ACTIVATED = 'Voice mode is on.'
-const NOT_SPOKEN = 'Not spoken'
+// how mcp.rs starts a say result that was not spoken
+const NOT_SPOKEN = ['Not spoken', 'Voice mode is off']
 // what mcp.rs and hook.rs put ahead of utterances in a tool result: any other tool's output is
 // the tool's own, even when it quotes a delivery
 const RESULT_CUES = ['The user said meanwhile:', 'The user asked you to stop']
@@ -65,21 +66,37 @@ function sayText(input: unknown): string | undefined {
   return typeof t === 'string' && t.trim() ? t.trim() : undefined
 }
 
-function unspoken(output: unknown): boolean {
-  const t = Array.isArray(output) ? textOf(output as Block[]) : typeof output === 'string' ? output : ''
-  return t.startsWith(NOT_SPOKEN)
+function outputText(output: unknown): string {
+  return Array.isArray(output) ? textOf(output as Block[]) : typeof output === 'string' ? output : ''
+}
+
+/** Why a say was not spoken, from its result: the first sentence of mcp.rs's note. */
+function notSpoken(output: unknown): string | undefined {
+  const t = outputText(output)
+  if (!NOT_SPOKEN.some(n => t.startsWith(n))) return undefined
+  return t.split(/(?<=\.) /)[0]?.replace(/\.$/, '')
+}
+
+/** The utterances a tool result passed on, after the cue parlar writes ahead of them. */
+function heardInResult(text: string): string[] {
+  const cue = RESULT_CUES.map(c => text.indexOf(c)).find(i => i >= 0)
+  return cue === undefined ? [] : heardIn(text.slice(cue))
 }
 
 type Call = { tool_use_id?: string; tool: string; input: unknown; output?: unknown }
+type Line = { who: 'you' | 'parlar'; text: string; note?: string }
 
 /** The lines one tool call adds: what it spoke, then what the user said that it passed on. */
-function linesOf(c: Call, r: Rows) {
-  const out: { who: 'you' | 'parlar'; text: string; dim: boolean }[] = []
+function linesOf(c: Call, r: Rows): Line[] {
+  const out: Line[] = []
   if (c.tool === SAY) {
     const t = sayText(c.input)
-    if (t) out.push({ who: 'parlar', text: t, dim: unspoken(c.output) })
+    if (t) out.push({ who: 'parlar', text: t, note: notSpoken(c.output) })
   }
-  for (const h of r.calls[c.tool_use_id ?? ''] ?? []) out.push({ who: 'you', text: h, dim: false })
+  // a say result or a refused call's reason carries them in the row's own output; a PostToolUse
+  // context row only in what session.append noted
+  const heard = [...heardInResult(outputText(c.output)), ...(r.calls[c.tool_use_id ?? ''] ?? [])]
+  for (const h of heard) out.push({ who: 'you', text: h })
   return out
 }
 
@@ -96,14 +113,10 @@ export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCal
     const text = textOf(m.content)
     if (text.includes(WAKE)) notes.push({ kind: 'wakes', key: e.uuid, heard: heardIn(text.slice(text.indexOf(WAKE))) })
   }
+  // a tool result's own utterances are read from the row's output; here it only marks the call
+  // a following PostToolUse context row belongs to
   if (e.door === 'tool-result' && Array.isArray(m.content)) {
-    for (const b of m.content) {
-      if (b.type !== 'tool_result' || !b.tool_use_id) continue
-      lastCall = b.tool_use_id
-      const text = textOf(b.content)
-      const cue = RESULT_CUES.map(c => text.indexOf(c)).find(i => i >= 0)
-      if (cue !== undefined) notes.push({ kind: 'calls', key: b.tool_use_id, heard: heardIn(text.slice(cue)) })
-    }
+    for (const b of m.content) if (b.type === 'tool_result' && b.tool_use_id) lastCall = b.tool_use_id
   }
   if (e.door === 'hook-context' && m.name === 'hook_additional_context') {
     notes.push({ kind: 'calls', key: lastCall, heard: heardIn(textOf(m.content)) })
@@ -146,9 +159,9 @@ export function registerRows(on: On) {
       <Box flexDirection="column">
         {above}
         {lines.map(l => (
-          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.dim}>
+          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.note !== undefined}>
             {l.who} ▸ {l.text}
-            {l.dim ? ' (not spoken)' : ''}
+            {l.note ? ` (${l.note})` : ''}
           </Text>
         ))}
       </Box>
@@ -164,9 +177,9 @@ export function registerRows(on: On) {
       <Box flexDirection="column">
         {above}
         {lines.map(l => (
-          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.dim}>
+          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.note !== undefined}>
             {l.who} ▸ {l.text}
-            {l.dim ? ' (not spoken)' : ''}
+            {l.note ? ` (${l.note})` : ''}
           </Text>
         ))}
       </Box>
