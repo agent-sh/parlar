@@ -112,8 +112,6 @@ const live = {
   flareAt: 0,
   // set once the watch has seen parlard, so the first connect of a session raises no toast
   seen: false,
-  // the voice pane is open, so its button closes it
-  paneOpen: false,
 }
 
 function set($: EngineInterface, patch: Partial<Strip>) {
@@ -270,7 +268,6 @@ async function refreshDevices($: EngineInterface) {
 }
 
 async function openPane($: EngineInterface) {
-  live.paneOpen = true
   await set($, { paneOpen: true })
   const placed = await $.ui.open({ id: PANE, title: 'Voice' })
   await Promise.all([refreshFocus($), refreshDevices($)])
@@ -279,8 +276,8 @@ async function openPane($: EngineInterface) {
 
 /** The pane button: opens the pane, or closes it when it is open. */
 async function togglePane($: EngineInterface) {
-  if (!live.paneOpen) return void (await openPane($))
-  live.paneOpen = false
+  // kept in $.state, so a reload of the module still knows the pane is open
+  if (!(await read($, strip)).paneOpen) return void (await openPane($))
   await set($, { paneOpen: false })
   await $.ui.close({ id: PANE })
 }
@@ -317,7 +314,8 @@ export const register: Register = on => {
     live.session = await $.session.id()
     const root = $.plugin.root
     live.bin = root.includes('\\') ? 'parlar' : `${root}/bin/parlar`
-    await update($, strip, () => IDLE)
+    // a reload starts the strip over, but a pane it opened is still open
+    await update($, strip, old => ({ ...IDLE, paneOpen: old.paneOpen }))
     void watch($).catch(quiet)
     // reconnect after parlard starts or restarts
     $.clock.every(5_000, () => {
@@ -338,7 +336,6 @@ export const register: Register = on => {
   on('ui.close', async ($, e, next) => {
     const closed = await next(e)
     if (e.id === PANE) {
-      live.paneOpen = false
       await set($, { paneOpen: false })
     }
     return closed
