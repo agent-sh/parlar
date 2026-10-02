@@ -231,7 +231,11 @@ async fn serve(cli: Cli) -> Result<()> {
         let inp = cli.input.clone().or_else(|| audio::Saved::load().input);
         if let Err(e) = m.open(inp.as_deref()) {
             eprintln!("mic {inp:?}: {e:#}; using the default");
-            m.open(None)?;
+            // a conversation saved as on opens the mic at once; when that fails, stay up as `ctl
+            // on` does: the supervisor reopens it, and the hooks and indicators keep a daemon
+            if let Err(e) = m.open(None) {
+                eprintln!("mic: {e:#}; running without it until it opens");
+            }
         }
         mic = Some(m);
         Some(frames)
