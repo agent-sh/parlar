@@ -369,7 +369,8 @@ impl State {
             if self.sessions[i].cwd.is_empty() { "session" } else { self.sessions[i].cwd.as_str() },
             u.text
         );
-        let _ = self.ui.send(Ui::Caption { who: "user".into(), text: u.text.clone() });
+        let session = self.sessions[i].session.clone();
+        let _ = self.ui.send(Ui::Caption { who: "user".into(), text: u.text.clone(), session, partial: false });
         self.sessions[i].pending.push(u);
         self.hand_over(i);
         let s = &self.sessions[i];
@@ -778,18 +779,20 @@ impl Daemon {
                 Response::Ok
             }
             Request::TurnEnd { origin, last_message } => {
-                let (opening, voice_off) = {
+                let (opening, voice_off, session) = {
                     let mut st = self.state.lock().await;
                     let Some(i) = st.find_or_attach(&origin) else { return Response::Ok };
+                    let session = st.sessions[i].session.clone();
                     st.sessions[i].running.clear();
                     let quiet = !st.sessions[i].said && st.active && st.focused(i);
                     st.sessions[i].said = true;
                     let opening = quiet.then_some(()).and(last_message).map(|m| format::opening(&m));
-                    (opening.filter(|m| !m.is_empty()), st.voice_off)
+                    (opening.filter(|m| !m.is_empty()), st.voice_off, session)
                 };
                 if let Some(text) = opening {
                     eprintln!("said nothing this turn, speaking its opening: {text}");
-                    let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone() });
+                    let _ =
+                        self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone(), session, partial: false });
                     if !voice_off {
                         self.voice.speak(text, SayKind::Answer, self.state.clone());
                     }
@@ -965,26 +968,27 @@ impl Daemon {
     /// Speak a line of parlar's own (not the agent's), when voice is on.
     pub async fn announce(&self, text: String) {
         let voice_off = self.state.lock().await.voice_off;
-        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone() });
+        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone(), session: None, partial: false });
         if !voice_off {
             self.voice.speak(text, SayKind::Status, self.state.clone());
         }
     }
 
     async fn say(&self, origin: Origin, text: String, kind: SayKind) -> Response {
-        let (focused, items, voice_off) = {
+        let (focused, items, voice_off, session) = {
             let mut st = self.state.lock().await;
             let Some(i) = st.find(&origin) else {
                 return Response::Error { message: "session is not attached to parlard".into() };
             };
+            let session = st.sessions[i].session.clone();
             let focused = st.focused(i) && st.active;
             let items = if focused { st.take(i) } else { vec![] };
             st.sessions[i].said = true;
             st.note(i, format!("parlar: {}", format::speakable(&text)), true);
-            (focused, items, st.voice_off)
+            (focused, items, st.voice_off, session)
         };
         let spoken_text = format::speakable(&text);
-        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: spoken_text.clone() });
+        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: spoken_text.clone(), session, partial: false });
         let spoken = focused && !voice_off && !spoken_text.is_empty();
         if spoken {
             self.voice.speak(spoken_text, kind, self.state.clone());
@@ -1610,6 +1614,37 @@ mod tests {
             Ok(Ok(Response::Utterances { items, superseded: false })) => assert!(items[0].text.ends_with("never mind")),
             r => panic!("{r:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn captions_name_the_session_they_belong_to() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let mut rx = d.ui.subscribe();
+        let a = talking_to(&d, "a", 1001).await;
+        let b =
+            Origin { session: Some("b".into()), pids: vec![1, 1002], harness_pid: Some(1002), ..Default::default() };
+        d.handle(Request::Attach { origin: b.clone(), harness: Harness::Claude, cwd: String::new(), mcp: false }).await;
+        d.handle(Request::Hear { text: "open the router".into(), heard: None }).await;
+        // b speaks from an older turn while a has focus: its caption is b's, not a's
+        d.handle(Request::Say { origin: b, text: "Still here.".into(), kind: SayKind::Answer }).await;
+        d.handle(Request::Say { origin: a, text: "Opening it.".into(), kind: SayKind::Answer }).await;
+        let mut captions = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            if let Ui::Caption { who, session, partial, .. } = ev {
+                captions.push((who, session, partial));
+            }
+        }
+        assert_eq!(
+            captions,
+            vec![
+                ("user".into(), Some("a".into()), false),
+                ("agent".into(), Some("b".into()), false),
+                ("agent".into(), Some("a".into()), false),
+            ]
+        );
+        // an indicator built before these fields reads the same line
+        let old: Ui = serde_json::from_str(r#"{"ui":"caption","who":"user","text":"hi"}"#).unwrap();
+        assert_eq!(old, Ui::Caption { who: "user".into(), text: "hi".into(), session: None, partial: false });
     }
 
     #[tokio::test]

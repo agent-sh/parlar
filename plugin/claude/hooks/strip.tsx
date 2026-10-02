@@ -51,7 +51,7 @@ type Event =
   | { ui: 'phase'; phase: Phase; mic_muted: boolean; voice_off: boolean }
   | { ui: 'levels'; user: number; agent: number }
   | { ui: 'tool'; ok: boolean; name: string | null }
-  | { ui: 'caption'; who: string; text: string }
+  | { ui: 'caption'; who: string; text: string; session?: string; partial?: boolean }
 
 export const meter = (levels: readonly number[]) =>
   levels
@@ -129,10 +129,14 @@ async function apply($: EngineInterface, ev: Event, now: number) {
       }
       return
     case 'caption': {
+      // a caption names its session; a partial, parlar's own line, or a daemon from before that
+      // field belongs to whoever has focus
+      const mine = ev.session !== undefined ? ev.session === live.session : (await read($, strip)).focused
+      if (!mine) return
       live.captionAt = now
       await set($, { caption: { who: ev.who, text: ev.text } })
-      // captions are the focused session's conversation
-      if (!(await read($, strip)).focused) return
+      // the pane keeps finished lines, not the words so far
+      if (ev.partial) return
       const line: HistoryLine = { who: ev.who === 'user' ? 'you' : 'parlar', text: ev.text }
       await update($, panel, p => ({ ...p, history: [...p.history, line].slice(-HISTORY) }))
       return
@@ -303,7 +307,8 @@ export const register: Register = on => {
               {here.focused ? '●' : '○'} {folder(here.cwd)} (this one)
             </Text>
           )}
-          {!here && s.connected && (
+          {s.connected && !here?.focused && (
+            // talk attaches this session if parlard does not know it yet, then focuses it
             <Button
               key="attach"
               label="talk here"

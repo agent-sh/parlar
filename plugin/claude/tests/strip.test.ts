@@ -96,8 +96,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
       on,
       [
         { ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false },
-        // the first caption lands before the focus poll: not this session's yet
-        { ui: 'caption', who: 'user', text: 'too early' },
+        { ui: 'caption', who: 'user', text: 'open the router', session: 'abc-123' },
+        { ui: 'caption', who: 'user', text: 'open the', partial: true },
+        { ui: 'caption', who: 'agent', text: 'Another session speaking.', session: 'other-1' },
       ],
       true,
     )
@@ -107,6 +108,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(String((r as { text?: string }).text)).toMatch(/opened/)
     const ui = await $.ui.mount({ plugin: 'parlar', surface, ...PANE } as never)
     expect(await ui.find({ type: 'Text', text: /parlar \(this one\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /you ▸ open the router/ })).toBeDefined()
+    // a partial is not kept, and another session's line is not this conversation
+    expect(await ui.findAll({ type: 'Text', text: /you ▸/ })).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /Another session/ })).toBeUndefined()
+    expect(await ui.find({ key: 'attach' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /ginza codex/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /● System default/ })).toBeDefined()
     await ui.press({ key: 'focus-other-1' })
@@ -117,3 +123,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
     d.release()
   })
 }
+
+test('the pane offers talk here when this session lost focus', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const d = daemon(on, [{ ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false }], false)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  await $.command.run({ command: 'parlar' } as never)
+  const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...PANE } as never)
+  await ui.press({ key: 'attach' })
+  expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'talk', '--session', SESSION])
+  await ui.unmount()
+  d.release()
+})
