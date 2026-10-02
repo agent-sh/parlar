@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Claude Code voice pane: the conversation fills it. "Talking to", "Mic" and "Speaker" are one line
+  each and open on a click, a pick closes them again, and mute, voice and stop or start sit on
+  the pane's status line instead of a row of their own. The strip's pane button closes the pane when it is open.
 - Claude Code strip: it takes a line of its own only while someone is talking. During a turn the
   voice mark and its mute, stop and pane buttons sit at the end of Claude's own spinner line;
   when idle the hint line under the prompt says "● voice ready · /parlar".

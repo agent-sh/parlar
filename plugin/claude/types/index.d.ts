@@ -14,6 +14,8 @@ export type Strip = {
   caption: { who: string; text: string } | null
   /** A failed tool call, shown red until it fades. */
   flare: boolean
+  /** The voice pane is open: its buttons are there, so the strip leaves them out. */
+  paneOpen?: boolean
 }
 
 /** One line of the conversation as the pane lists it. */
@@ -25,8 +27,13 @@ export type SessionRow = { session: string; cwd: string; harness: string; focuse
 /** An audio device, as `parlar ctl devices` lists it. */
 export type Device = { id: string; name: string; current: boolean }
 
+/** A pane section that opens on a click: the sessions, the mic or the speaker. */
+export type Section = 'sessions' | 'input' | 'output'
+
 /** What the voice pane draws. */
 export type Panel = {
+  /** The section clicked open, one at a time. */
+  open?: Section | null
   /** The conversation heard and spoken while this session had focus, oldest first. */
   history: HistoryLine[]
   sessions: SessionRow[]
