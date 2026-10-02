@@ -155,6 +155,11 @@ claude plugin install parlar@parlar
 parlar setup claude                               # say speaks without a permission prompt
 ```
 
+While a conversation is on, Claude Code shows a voice strip above the prompt: what parlar is doing,
+a level meter, the last line heard or spoken, and mute, voice, stop and "talk here" buttons (ctrl+x
+tab, then the hotkey). It is a function-hooks module in the plugin (`plugin/claude/hooks/strip.tsx`),
+an early access Claude Code API, run on 2.1.287.
+
 Optional status line: set `statusLine.command` to `parlar status`, with `refreshInterval: 1`.
 
 ### Codex

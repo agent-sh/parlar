@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Claude Code: a voice strip above the prompt while a conversation is on. It shows the phase, a
+  level meter, the last line heard or spoken, and mute, voice, stop and "talk here" buttons. It
+  works in any terminal, so KDE, macOS and SSH sessions get an indicator in the session itself.
 - GNOME indicator: "Close indicator" in the right-click menu, also when parlard is not running. It
   disables the extension, like the Windows and macOS overlays' item; `gnome-extensions enable
   parlar@avifenesh` brings it back.

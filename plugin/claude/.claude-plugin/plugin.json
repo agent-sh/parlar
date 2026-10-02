@@ -8,5 +8,6 @@
   "author": {
     "name": "agent-sh",
     "url": "https://github.com/agent-sh"
-  }
+  },
+  "types": "./types/index.d.ts"
 }
