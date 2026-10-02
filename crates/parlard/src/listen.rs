@@ -252,6 +252,11 @@ fn run(
                 return Ok(Exit::Idle);
             }
         }
+        // the latch belongs to one line and its tail: it ends with them, mic audio or not (a muted
+        // mic reads none)
+        if line_clipped && !agent_speaking.load(Ordering::SeqCst) && echo.current().is_empty() {
+            line_clipped = false;
+        }
         let mut changed = false;
         match frames.rx.recv_timeout(Duration::from_millis(30)) {
             Ok(mut f) => {
@@ -326,9 +331,11 @@ fn run(
                 } else {
                     voiced_since = None;
                 }
-                if in_turn {
+                if in_turn && !line_clipped {
                     recent.push(&f);
                     seg.total += f.len();
+                } else if in_turn {
+                    // a turn kept from before the clip ends here: the clipped echo is not its audio
                 } else {
                     preroll.push(&f);
                 }
