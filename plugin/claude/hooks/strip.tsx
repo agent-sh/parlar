@@ -45,10 +45,20 @@ type Event =
   | { ui: 'caption'; who: string; text: string }
 
 export const meter = (levels: readonly number[]) =>
-  levels.map(l => BARS[Math.min(BARS.length - 1, Math.floor(Math.sqrt(Math.max(0, l)) * BARS.length))]).join('')
+  levels
+    .map(l => BARS[Math.min(BARS.length - 1, Math.floor(Math.sqrt(Math.max(0, l)) * BARS.length))])
+    .join('')
 
 // the module's own values: a reload starts them over, the strip itself lives in $.state
-const live = { watching: false, session: '', levels: [] as number[], dirty: false, captionAt: 0, flareAt: 0 }
+const live = {
+  watching: false,
+  session: '',
+  phase: 'stopped' as Phase,
+  levels: [] as number[],
+  dirty: false,
+  captionAt: 0,
+  flareAt: 0,
+}
 
 function set($: EngineInterface, patch: Partial<Strip>) {
   return update($, strip, s => ({ ...s, ...patch }))
@@ -73,13 +83,21 @@ async function refreshFocus($: EngineInterface) {
 async function apply($: EngineInterface, ev: Event, now: number) {
   switch (ev.ui) {
     case 'phase':
+      live.phase = ev.phase
       live.levels = []
-      await set($, { connected: true, phase: ev.phase, muted: ev.mic_muted, voiceOff: ev.voice_off, levels: [] })
+      await set($, {
+        connected: true,
+        phase: ev.phase,
+        muted: ev.mic_muted,
+        voiceOff: ev.voice_off,
+        levels: [],
+      })
       void refreshFocus($).catch(quiet)
       return
     case 'levels': {
-      const { phase } = await read($, strip)
-      const l = phase === 'speaking' ? ev.agent : phase === 'listening' || phase === 'interrupting' ? ev.user : 0
+      const phase = live.phase
+      const l =
+        phase === 'speaking' ? ev.agent : phase === 'listening' || phase === 'interrupting' ? ev.user : 0
       live.levels = [...live.levels, l].slice(-METER)
       live.dirty = true
       return
@@ -172,6 +190,8 @@ export const register: Register = on => {
     const s = await read($, strip)
     if (e.props.hasSurvey || !s.connected || s.phase === 'stopped') return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
+    // whatever else the band holds stays, under the strip
+    const below = await next(e)
 
     const talking = s.phase === 'speaking' ? AGENT : USER
     const color = s.flare ? 'red' : s.muted ? undefined : s.phase === 'working' ? AGENT : talking
@@ -180,39 +200,48 @@ export const register: Register = on => {
     const who = s.caption?.who === 'user' ? 'you' : 'agent'
 
     return (
-      // the engine draws its collapse mark in the last columns
-      <Box flexDirection="row" gap={1} width={Math.max(20, e.props.bodyColumns - 4)}>
-        <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused}>
-          {s.focused ? '●' : '○'} voice {word}
-        </Text>
-        {metering && s.levels.length > 0 && <Text color={talking}>{meter(s.levels)}</Text>}
-        {!s.focused && <Text dimColor>not focused here</Text>}
-        {s.voiceOff && <Text dimColor>captions only</Text>}
-        {s.focused && s.caption && (
-          <Box flexGrow={1} flexShrink={1}>
-            <Text dimColor wrap="truncate-end">
-              {who}: {s.caption.text}
-            </Text>
-          </Box>
-        )}
-        {!s.focused && (
-          <Button key="focus" label="talk here" hotkey="t" plain onPress={() => ctl($, 'focus', live.session)} />
-        )}
-        <Button
-          key="mute"
-          label={s.muted ? 'unmute' : 'mute'}
-          hotkey="m"
-          plain
-          onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
-        />
-        <Button
-          key="voice"
-          label={s.voiceOff ? 'voice on' : 'voice off'}
-          hotkey="v"
-          plain
-          onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
-        />
-        <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
+      <Box flexDirection="column">
+        {/* the engine draws its collapse mark in the last columns */}
+        <Box flexDirection="row" gap={1} width={Math.max(20, e.props.bodyColumns - 4)}>
+          <Text color={color} dimColor={s.muted || !s.focused} bold={s.focused}>
+            {s.focused ? '●' : '○'} voice {word}
+          </Text>
+          {metering && s.levels.length > 0 && <Text color={talking}>{meter(s.levels)}</Text>}
+          {!s.focused && <Text dimColor>not focused here</Text>}
+          {s.voiceOff && <Text dimColor>captions only</Text>}
+          {s.focused && s.caption && (
+            <Box flexGrow={1} flexShrink={1}>
+              <Text dimColor wrap="truncate-end">
+                {who}: {s.caption.text}
+              </Text>
+            </Box>
+          )}
+          {!s.focused && (
+            <Button
+              key="focus"
+              label="talk here"
+              hotkey="t"
+              plain
+              onPress={() => ctl($, 'focus', live.session)}
+            />
+          )}
+          <Button
+            key="mute"
+            label={s.muted ? 'unmute' : 'mute'}
+            hotkey="m"
+            plain
+            onPress={() => ctl($, s.muted ? 'unmute' : 'mute')}
+          />
+          <Button
+            key="voice"
+            label={s.voiceOff ? 'voice on' : 'voice off'}
+            hotkey="v"
+            plain
+            onPress={() => ctl($, s.voiceOff ? 'voice-on' : 'voice-off')}
+          />
+          <Button key="stop" label="stop" hotkey="s" plain onPress={() => ctl($, 'off')} />
+        </Box>
+        {below}
       </Box>
     )
   })
