@@ -191,9 +191,13 @@ test('the strip budget keeps mute and stop and drops the rest to fit', () => {
   // 80 columns, off focus, captions only, listening: the case that overflowed
   const narrow = fits(76, { focused: false, voiceOff: true }, true)
   const used =
-    18 + 10 + 8 + 13 + (narrow.meter ? 9 : 0) + (narrow.voice ? 13 : 0) + (narrow.notFocused ? 17 : 0) +
+    18 + 1 + 10 + 8 + 13 + (narrow.meter ? 9 : 0) + (narrow.voice ? 13 : 0) + (narrow.notFocused ? 17 : 0) +
     (narrow.captionsOnly ? 14 : 0) + (narrow.pane ? 8 : 0)
   expect(used).toBeLessThanOrEqual(76)
+  // revuto's case: 74 columns (70 for the row), off focus, mic muted, voice on, ready
+  const edge = fits(70, { focused: false, voiceOff: false }, false)
+  const edgeUsed = 18 + 1 + 13 + 10 + 8 + (edge.voice ? 13 : 0) + (edge.notFocused ? 17 : 0) + (edge.pane ? 8 : 0)
+  expect(edgeUsed).toBeLessThanOrEqual(70)
   expect(fits(30, { focused: true, voiceOff: false }, true)).toEqual({
     meter: false,
     voice: false,

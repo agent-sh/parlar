@@ -43,6 +43,7 @@ const WORD_WIDTH = 10
 // as the terminal draws it ('m: mute'), each with the gap before it
 const CELLS = {
   phase: 8 + 10,
+  caption: 1,
   meter: 1 + 8,
   notFocused: 1 + 16,
   captionsOnly: 1 + 13,
@@ -55,7 +56,9 @@ const CELLS = {
 
 /** What fits in `width`: mute and stop always (and talk here off focus), the rest by priority. */
 export function fits(width: number, s: { focused: boolean; voiceOff: boolean }, metering: boolean) {
-  let left = width - CELLS.phase - CELLS.mute - CELLS.stop - (s.focused ? 0 : CELLS.talk)
+  // the caption box is always in the row, so its gap is too; the button group's leading gap is
+  // the one its first button counts
+  let left = width - CELLS.phase - CELLS.caption - CELLS.mute - CELLS.stop - (s.focused ? 0 : CELLS.talk)
   const take = (want: boolean, cells: number) => {
     if (!want || left < cells) return false
     left -= cells
