@@ -158,7 +158,8 @@ parlar setup claude                               # say speaks without a permiss
 While a conversation is on, Claude Code shows a voice strip above the prompt: what parlar is doing,
 a level meter, the last line heard or spoken, and mute, voice, stop and "talk here" buttons (ctrl+x
 tab, then the hotkey). It is a function-hooks module in the plugin (`plugin/claude/hooks/strip.tsx`),
-an early access Claude Code API, run on 2.1.287.
+an early access Claude Code API, run on 2.1.287. The same module draws the spoken exchange in the
+transcript as "you ▸" and "parlar ▸" lines where it happened.
 
 Optional status line: set `statusLine.command` to `parlar status`, with `refreshInterval: 1`.
 

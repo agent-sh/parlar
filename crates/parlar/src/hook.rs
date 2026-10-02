@@ -225,7 +225,9 @@ fn wait_for(o: &Origin, holds_turn: bool, parked: bool) -> Vec<Utterance> {
 
 /// Add the conversation lines not yet printed as the hook's system message.
 fn show(c: &mut Client, o: &Origin, out: &mut Map<String, Value>) {
-    if let Ok(Response::Transcript { lines }) = c.call(&Request::Transcript { origin: o.clone() }, Some(QUICK))
+    // the Claude Code strip module sets PARLAR_ROWS and draws what was heard and said itself
+    let rows = std::env::var_os("PARLAR_ROWS").is_some_and(|v| v == "1");
+    if let Ok(Response::Transcript { lines }) = c.call(&Request::Transcript { origin: o.clone(), rows }, Some(QUICK))
         && !lines.is_empty()
     {
         out.insert("systemMessage".into(), json!(lines.join("\n")));

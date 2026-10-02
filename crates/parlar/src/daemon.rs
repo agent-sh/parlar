@@ -45,8 +45,9 @@ struct Session {
     said: bool,
     /// When the Stop hook last continued the turn with pending speech.
     blocked_at: Option<std::time::Instant>,
-    /// Conversation lines not yet printed in this session's terminal.
-    transcript: Vec<String>,
+    /// Conversation lines not yet printed in this session's terminal, each marked when it is
+    /// something heard or spoken through `say`, which a harness may draw in its own rows.
+    transcript: Vec<(String, bool)>,
     /// The main thread's tool calls in flight, oldest first.
     running: Vec<Call>,
     /// The user was already told that the calls in flight hold their words.
@@ -173,7 +174,7 @@ impl State {
                 "parlar: voice moved to {}",
                 to.filter(|f| !f.is_empty()).unwrap_or_else(|| "another session".into())
             );
-            self.note(prev, line);
+            self.note(prev, line, false);
         }
         self.focus = Some(key);
         self.sessions[i].remind = true;
@@ -274,9 +275,9 @@ impl State {
         items
     }
 
-    fn note(&mut self, i: usize, line: String) {
+    fn note(&mut self, i: usize, line: String, spoken: bool) {
         let t = &mut self.sessions[i].transcript;
-        t.push(line);
+        t.push((line, spoken));
         let over = t.len().saturating_sub(TRANSCRIPT_CAP);
         t.drain(..over);
     }
@@ -348,7 +349,7 @@ impl State {
         let key = self.sessions[i].key;
         let recent =
             self.last_heard.filter(|(_, k, at)| *k == key && at.elapsed() < CONTINUATION).map(|(prev, _, _)| prev);
-        self.note(i, format!("you: {text}"));
+        self.note(i, format!("you: {text}"), true);
         // a follow-up to an utterance nobody has read yet joins it instead of trailing behind
         if let Some(prev) = recent
             && let Some(last) = self.sessions[i].pending.last_mut().filter(|u| u.id == prev)
@@ -795,10 +796,14 @@ impl Daemon {
                 }
                 Response::Ok
             }
-            Request::Transcript { origin } => {
+            Request::Transcript { origin, rows } => {
                 let mut st = self.state.lock().await;
                 let lines = match st.find(&origin) {
-                    Some(i) => std::mem::take(&mut st.sessions[i].transcript),
+                    Some(i) => std::mem::take(&mut st.sessions[i].transcript)
+                        .into_iter()
+                        .filter(|(_, spoken)| !(rows && *spoken))
+                        .map(|(line, _)| line)
+                        .collect(),
                     None => vec![],
                 };
                 Response::Transcript { lines }
@@ -975,7 +980,7 @@ impl Daemon {
             let focused = st.focused(i) && st.active;
             let items = if focused { st.take(i) } else { vec![] };
             st.sessions[i].said = true;
-            st.note(i, format!("parlar: {}", format::speakable(&text)));
+            st.note(i, format!("parlar: {}", format::speakable(&text)), true);
             (focused, items, st.voice_off)
         };
         let spoken_text = format::speakable(&text);
@@ -1099,7 +1104,7 @@ impl State {
         } else {
             format!("Got it. {step} I'll pass that on when it ends.")
         };
-        self.note(i, format!("parlar: {ack}"));
+        self.note(i, format!("parlar: {ack}"), false);
         Some(ack)
     }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
@@ -1608,6 +1613,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_harness_that_draws_rows_gets_only_the_other_lines() {
+        let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
+        let a = talking_to(&d, "a", 1001).await;
+        d.handle(Request::Hear { text: "open the router".into(), heard: None }).await;
+        let b =
+            Origin { session: Some("b".into()), pids: vec![1, 1002], harness_pid: Some(1002), ..Default::default() };
+        d.handle(Request::Attach { origin: b, harness: Harness::Claude, cwd: "/w/other".into(), mcp: false }).await;
+        d.handle(Request::Set {
+            active: None,
+            mic_muted: None,
+            voice_off: None,
+            focus: Some("b".into()),
+            input: None,
+            output: None,
+        })
+        .await;
+        match d.handle(Request::Transcript { origin: a.clone(), rows: true }).await {
+            Response::Transcript { lines } => {
+                assert!(lines.iter().all(|l| !l.starts_with("you:")), "{lines:?}");
+                assert!(lines.iter().any(|l| l.contains("voice moved to other")), "{lines:?}");
+            }
+            r => panic!("{r:?}"),
+        }
+        // the dropped lines are gone, not saved for a later reader
+        match d.handle(Request::Transcript { origin: a, rows: false }).await {
+            Response::Transcript { lines } => assert!(lines.is_empty(), "{lines:?}"),
+            r => panic!("{r:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn the_session_that_loses_focus_is_told_where_it_went() {
         let d = Arc::new(Daemon::new(Arc::new(Queue::new(Engine::Silent))));
         let a = talking_to(&d, "a", 1001).await;
@@ -1624,7 +1660,7 @@ mod tests {
             output: None,
         })
         .await;
-        match d.handle(Request::Transcript { origin: a }).await {
+        match d.handle(Request::Transcript { origin: a, rows: false }).await {
             Response::Transcript { lines } => {
                 assert!(lines.iter().any(|l| l.contains("voice moved to other")), "{lines:?}")
             }
