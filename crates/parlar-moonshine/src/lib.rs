@@ -316,12 +316,19 @@ impl Tts {
         let code = unsafe { (api()?.moonshine_tts_next_chunk)(self.h, 0, &mut out) };
         match code {
             0 => {
-                // SAFETY: success guarantees a non-null chunk
+                if out.is_null() {
+                    bail!("moonshine_tts_next_chunk reported success but returned a null chunk");
+                }
+                // SAFETY: checked non-null above; the chunk stays valid until the next call
                 let c = unsafe { &*out };
-                // SAFETY: audio_data_count samples follow audio_data
-                let pcm = unsafe { std::slice::from_raw_parts(c.audio_data, c.audio_data_count as usize) };
+                let pcm = if c.audio_data.is_null() || c.audio_data_count == 0 {
+                    Vec::new()
+                } else {
+                    // SAFETY: non-null, and audio_data_count samples follow audio_data
+                    unsafe { std::slice::from_raw_parts(c.audio_data, c.audio_data_count as usize) }.to_vec()
+                };
                 Ok(Next::Audio {
-                    pcm: pcm.to_vec(),
+                    pcm,
                     sample_rate: c.sample_rate,
                     text: cstr(c.text),
                     utterance: c.utterance_id,
