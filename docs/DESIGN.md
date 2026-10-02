@@ -207,6 +207,13 @@ GNOME: extension draws with `St.DrawingArea` (Cairo) in `Main.layoutManager.addT
 subscribes to the daemon socket for state plus levels at 30 Hz. Terminal: `parlar status` for the
 Claude Code statusLine (`refreshInterval: 1`).
 
+Claude Code strip: `plugin/claude/hooks/strip.tsx`, a function-hooks module (early access API) that
+draws the band above the prompt. It follows `parlar ctl watch`, so it gets the same events as the
+GNOME indicator, and redraws at 8 Hz at most. Focus changes send no event, so it polls `parlar ctl
+state` every 2 s while a conversation is on. It draws nothing while the conversation is off or
+parlard is not running, and reconnects within 5 s when parlard comes back. The command hooks still
+carry the conversation; the strip only shows it and runs `parlar ctl` for its buttons.
+
 ## 9. Session focus
 
 - Every attached session registers with its harness, cwd and session id (SessionStart hook, and

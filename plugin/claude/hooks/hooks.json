@@ -1,4 +1,7 @@
 {
+  "modules": [
+    "./strip.tsx"
+  ],
   "hooks": {
     "SessionStart": [
       {
