@@ -57,7 +57,7 @@ function keep(map: Record<string, string[]>, key: string, heard: string[]) {
   return next
 }
 
-function remember($: EngineInterface, kind: keyof Rows, key: string, heard: string[]) {
+function remember($: EngineInterface, kind: 'wakes' | 'calls', key: string, heard: string[]) {
   return update($, rows, r => ({ ...r, [kind]: keep(r[kind], key, heard) }))
 }
 
@@ -84,7 +84,7 @@ function heardInResult(text: string): string[] {
 }
 
 type Call = { tool_use_id?: string; tool: string; input: unknown; output?: unknown }
-type Line = { who: 'you' | 'parlar'; text: string; note?: string }
+type Line = { who: 'you' | 'parlar' | 'note'; text: string; note?: string }
 
 /** The lines one tool call adds: what it spoke, then what the user said that it passed on. */
 function linesOf(c: Call, r: Rows): Line[] {
@@ -97,11 +97,13 @@ function linesOf(c: Call, r: Rows): Line[] {
   // context row only in what session.append noted
   const heard = [...heardInResult(outputText(c.output)), ...(r.calls[c.tool_use_id ?? ''] ?? [])]
   for (const h of heard) out.push({ who: 'you', text: h })
+  // parlar's own answer while the call ran: a system note, not the agent speaking
+  for (const n of r.notes?.[c.tool_use_id ?? ''] ?? []) out.push({ who: 'note', text: n })
   return out
 }
 
 type Appended = { door: string; origin: { kind: string }; uuid: string; message: unknown; agentId?: string }
-type Note = { kind: keyof Rows; key: string; heard: string[] }
+type Note = { kind: 'wakes' | 'calls'; key: string; heard: string[] }
 
 /** What one appended row tells about which row delivered which utterances. */
 export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCall: string } {
@@ -111,7 +113,8 @@ export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCal
   if (e.agentId) return { notes, lastCall }
   if (e.door === 'prompt' && e.origin.kind === 'task-notification') {
     const text = textOf(m.content)
-    if (text.includes(WAKE)) notes.push({ kind: 'wakes', key: e.uuid, heard: heardIn(text.slice(text.indexOf(WAKE))) })
+    if (text.includes(WAKE))
+      notes.push({ kind: 'wakes', key: e.uuid, heard: heardIn(text.slice(text.indexOf(WAKE))) })
   }
   // a tool result's own utterances are read from the row's output; here it only marks the call
   // a following PostToolUse context row belongs to
@@ -122,6 +125,31 @@ export function notesOf(e: Appended, lastCall: string): { notes: Note[]; lastCal
     notes.push({ kind: 'calls', key: lastCall, heard: heardIn(textOf(m.content)) })
   }
   return { notes: notes.filter(n => n.key && n.heard.length > 0), lastCall }
+}
+
+type TextOf = ReturnType<EngineInterface['ui']['resolve']>['Text']
+
+/** One drawn line: the person in blue, the agent in amber, parlar's own notes dim and plain. */
+function drawLine(l: Line, Text: TextOf) {
+  if (l.who === 'note') {
+    return (
+      <Text dimColor italic>
+        · {l.text}
+      </Text>
+    )
+  }
+  return (
+    <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.note !== undefined}>
+      {l.who} ▸ {l.text}
+      {l.note ? ` (${l.note})` : ''}
+    </Text>
+  )
+}
+
+/** Keep parlar's note on the tool call it answered during, for that call's row. */
+export function withNote(r: Rows, call: string, text: string): Rows {
+  const notes = keep(r.notes ?? {}, call, [text])
+  return { ...r, notes }
 }
 
 export function registerRows(on: On) {
@@ -158,12 +186,7 @@ export function registerRows(on: On) {
     return (
       <Box flexDirection="column">
         {above}
-        {lines.map(l => (
-          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.note !== undefined}>
-            {l.who} ▸ {l.text}
-            {l.note ? ` (${l.note})` : ''}
-          </Text>
-        ))}
+        {lines.map(l => drawLine(l, Text))}
       </Box>
     )
   })
@@ -176,12 +199,7 @@ export function registerRows(on: On) {
     return (
       <Box flexDirection="column">
         {above}
-        {lines.map(l => (
-          <Text color={l.who === 'you' ? USER : AGENT} dimColor={l.note !== undefined}>
-            {l.who} ▸ {l.text}
-            {l.note ? ` (${l.note})` : ''}
-          </Text>
-        ))}
+        {lines.map(l => drawLine(l, Text))}
       </Box>
     )
   })

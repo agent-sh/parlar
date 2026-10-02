@@ -39,6 +39,8 @@ export type Rows = {
   wakes: Record<string, string[]>
   /** By the tool call whose PostToolUse context passed them on. */
   calls: Record<string, string[]>
+  /** parlar's own notes (its answer to words heard during a long call), by that call. */
+  notes?: Record<string, string[]>
 }
 
 declare module 'claude-code' {

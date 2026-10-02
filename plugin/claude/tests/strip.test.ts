@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { fits } from '../hooks/strip'
+
 const SESSION = 'abc-123'
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 9 }, view: {} } } as const
 
@@ -180,5 +182,53 @@ test('a daemon notice shows as a toast', async ($, on) => {
   await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
   await clock.advance(100)
   expect(d.toasts).toContain('The mic clips on parlar own voice')
+  d.release()
+})
+
+test('the strip budget keeps mute and stop and drops the rest to fit', () => {
+  const wide = fits(166, { focused: false, voiceOff: true }, true)
+  expect(wide).toEqual({ meter: true, voice: true, notFocused: true, captionsOnly: true, pane: true })
+  // 80 columns, off focus, captions only, listening: the case that overflowed
+  const narrow = fits(76, { focused: false, voiceOff: true }, true)
+  const used =
+    18 + 10 + 8 + 13 + (narrow.meter ? 9 : 0) + (narrow.voice ? 13 : 0) + (narrow.notFocused ? 17 : 0) +
+    (narrow.captionsOnly ? 14 : 0) + (narrow.pane ? 8 : 0)
+  expect(used).toBeLessThanOrEqual(76)
+  expect(fits(30, { focused: true, voiceOff: false }, true)).toEqual({
+    meter: false,
+    voice: false,
+    notFocused: false,
+    captionsOnly: false,
+    pane: false,
+  })
+})
+
+test("parlar's note during a long call draws dim on that call's row", async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const note = "Got it. I'm still on this step: run the tests. I'll pass that on when it ends."
+  const d = daemon(
+    on,
+    [
+      { ui: 'phase', phase: 'working', mic_muted: false, voice_off: false },
+      { ui: 'caption', who: 'parlar', text: note, session: SESSION, call: 't9' },
+    ],
+    true,
+  )
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(200)
+  const ui = await $.ui.mount({
+    plugin: 'parlar',
+    surface: 'terminal',
+    component: 'ToolGroup',
+    props: {
+      calls: [{ tool_use_id: 't9', tool: 'Bash', input: { command: 'cargo test' }, isRunning: true, isErrored: false, isInterrupted: false }],
+      isActive: true,
+      isExpanded: false,
+    },
+  } as never)
+  const line = await ui.find({ type: 'Text', text: /· Got it\. I'm still on this step/ })
+  expect(line).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /parlar ▸ Got it/ })).toBeUndefined()
+  await ui.unmount()
   d.release()
 })

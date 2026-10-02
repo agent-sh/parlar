@@ -352,7 +352,8 @@ impl State {
         self.note(i, format!("you: {text}"), true);
         // a finished caption for every utterance, a merged follow-up included
         let session = self.sessions[i].session.clone();
-        let _ = self.ui.send(Ui::Caption { who: "user".into(), text: text.clone(), session, partial: false });
+        let _ =
+            self.ui.send(Ui::Caption { who: "user".into(), text: text.clone(), session, partial: false, call: None });
         // a follow-up to an utterance nobody has read yet joins it instead of trailing behind
         if let Some(prev) = recent
             && let Some(last) = self.sessions[i].pending.last_mut().filter(|u| u.id == prev)
@@ -792,8 +793,13 @@ impl Daemon {
                 };
                 if let Some(text) = opening {
                     eprintln!("said nothing this turn, speaking its opening: {text}");
-                    let _ =
-                        self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone(), session, partial: false });
+                    let _ = self.ui.send(Ui::Caption {
+                        who: "agent".into(),
+                        text: text.clone(),
+                        session,
+                        partial: false,
+                        call: None,
+                    });
                     if !voice_off {
                         self.voice.speak(text, SayKind::Answer, self.state.clone());
                     }
@@ -850,7 +856,7 @@ impl Daemon {
                 let ack = st.busy_ack(&text);
                 drop(st);
                 if let Some(ack) = ack {
-                    self.announce(ack).await;
+                    self.acknowledge(ack).await;
                 }
                 Response::Heard { id, delivered_to }
             }
@@ -968,8 +974,18 @@ impl Daemon {
 
     /// Speak a line of parlar's own (not the agent's), when voice is on.
     pub async fn announce(&self, text: String) {
+        self.announce_line(text, None, None).await
+    }
+
+    /// Speak parlar's answer to words heard during a long tool call, captioned with that call.
+    pub async fn acknowledge(&self, ack: Ack) {
+        self.announce_line(ack.text, ack.session, Some(ack.call)).await
+    }
+
+    async fn announce_line(&self, text: String, session: Option<String>, call: Option<String>) {
         let voice_off = self.state.lock().await.voice_off;
-        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: text.clone(), session: None, partial: false });
+        let who = if call.is_some() { "parlar" } else { "agent" };
+        let _ = self.ui.send(Ui::Caption { who: who.into(), text: text.clone(), session, partial: false, call });
         if !voice_off {
             self.voice.speak(text, SayKind::Status, self.state.clone());
         }
@@ -989,7 +1005,13 @@ impl Daemon {
             (focused, items, st.voice_off, session)
         };
         let spoken_text = format::speakable(&text);
-        let _ = self.ui.send(Ui::Caption { who: "agent".into(), text: spoken_text.clone(), session, partial: false });
+        let _ = self.ui.send(Ui::Caption {
+            who: "agent".into(),
+            text: spoken_text.clone(),
+            session,
+            partial: false,
+            call: None,
+        });
         let spoken = focused && !voice_off && !spoken_text.is_empty();
         if spoken {
             self.voice.speak(spoken_text, kind, self.state.clone());
@@ -1090,10 +1112,11 @@ impl State {
     /// When the focused session is stuck in a long tool call, the user's words wait for it to end
     /// (no harness lets a hook into a running call). Says so once per call, in parlar's own
     /// voice, so the user is not left talking to silence. `text` is what they just said.
-    pub fn busy_ack(&mut self, text: &str) -> Option<String> {
+    pub fn busy_ack(&mut self, text: &str) -> Option<Ack> {
         let i = self.focus.and_then(|k| self.sessions.iter().position(|s| s.key == k))?;
         let s = &mut self.sessions[i];
-        let Call { detail, since, .. } = s.running.first()?;
+        let Call { id, detail, since } = s.running.first()?;
+        let (call, session) = (id.clone(), s.session.clone());
         if s.acked || since.elapsed() < LONG_STEP {
             return None;
         }
@@ -1109,12 +1132,21 @@ impl State {
         } else {
             format!("Got it. {step} I'll pass that on when it ends.")
         };
-        self.note(i, format!("parlar: {ack}"), false);
-        Some(ack)
+        // a harness that draws rows shows it on the tool call it is about
+        self.note(i, format!("parlar: {ack}"), true);
+        Some(Ack { text: ack, session, call })
     }
     pub fn ui(&self) -> broadcast::Sender<Ui> {
         self.ui.clone()
     }
+}
+
+/// parlar's own answer to words heard during a long tool call, and the call it is about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ack {
+    pub text: String,
+    pub session: Option<String>,
+    pub call: String,
 }
 
 /// A main-thread tool call in flight.
@@ -1459,9 +1491,16 @@ mod tests {
             c.since = back;
         }
         let ack = st.busy_ack("also run clippy").expect("acknowledged");
-        assert!(ack.contains("CI") && ack.contains("pass that on"), "{ack}");
+        assert!(ack.text.contains("CI") && ack.text.contains("pass that on"), "{}", ack.text);
+        // it names the call it answers during, so a harness that draws rows can show it there
+        assert_eq!((ack.call.as_str(), ack.session.as_deref()), ("t1", Some("busy")));
         assert_eq!(st.busy_ack("and the docs"), None, "once per tool call");
         drop(st);
+        // that harness draws it, so its hooks no longer print it
+        match d.handle(Request::Transcript { origin: o.clone(), rows: true }).await {
+            Response::Transcript { lines } => assert!(lines.iter().all(|l| !l.contains("pass that on")), "{lines:?}"),
+            r => panic!("{r:?}"),
+        }
         // the parallel call ending does not end the long one
         d.handle(end("t2")).await;
         assert_eq!(d.state.lock().await.sessions[0].running.len(), 1);
@@ -1648,7 +1687,10 @@ mod tests {
         );
         // an indicator built before these fields reads the same line
         let old: Ui = serde_json::from_str(r#"{"ui":"caption","who":"user","text":"hi"}"#).unwrap();
-        assert_eq!(old, Ui::Caption { who: "user".into(), text: "hi".into(), session: None, partial: false });
+        assert_eq!(
+            old,
+            Ui::Caption { who: "user".into(), text: "hi".into(), session: None, partial: false, call: None }
+        );
     }
 
     #[tokio::test]

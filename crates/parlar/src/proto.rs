@@ -303,5 +303,8 @@ pub enum Ui {
         /// A recognizer partial: the words so far, replaced by the next caption.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         partial: bool,
+        /// The tool call parlar's own line is about (its answer to words heard during a long call).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<String>,
     },
 }

@@ -325,7 +325,13 @@ async fn serve(cli: Cli) -> Result<()> {
                     listen::Heard::Partial(text) => {
                         eprintln!("hearing: {text}");
                         let st = state.lock().await;
-                        let _ = st.ui().send(Ui::Caption { who: "user".into(), text, session: None, partial: true });
+                        let _ = st.ui().send(Ui::Caption {
+                            who: "user".into(),
+                            text,
+                            session: None,
+                            partial: true,
+                            call: None,
+                        });
                     }
                     listen::Heard::Clipping => {
                         eprintln!("the mic clips on the agent's voice; talking over it is off while it does");
@@ -356,7 +362,7 @@ async fn serve(cli: Cli) -> Result<()> {
                             }
                         };
                         if let Some(ack) = ack {
-                            daemon.announce(ack).await;
+                            daemon.acknowledge(ack).await;
                         }
                     }
                 }
