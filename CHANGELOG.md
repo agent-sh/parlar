@@ -3,12 +3,15 @@
 ## [Unreleased]
 
 ### Fixed
+- Claude Code: the voice pane opens on, and follows, its newest line, and has a close button. The
+  strip keeps its line while idle (there is no spinner line to carry its buttons then) and steps
+  aside only during a turn.
 - Claude Code voice pane: the conversation fills it. "Talking to", "Mic" and "Speaker" are one line
   each and open on a click, a pick closes them again, and mute, voice and stop or start sit on
   the pane's status line instead of a row of their own. The strip's pane button closes the pane when it is open.
 - Claude Code strip: it takes a line of its own only while someone is talking. During a turn the
   voice mark and its mute, stop and pane buttons sit at the end of Claude's own spinner line;
-  when idle the hint line under the prompt says "● voice ready · /parlar".
+  when idle the strip keeps its own line.
 - Claude Code strip: it stays one line. The phase word and meter keep a fixed width, a long
   caption shows its last words instead of its first, and the labels and buttons that do not fit
   drop out by priority (mute and stop stay).
