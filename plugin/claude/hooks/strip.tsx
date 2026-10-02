@@ -51,6 +51,9 @@ export const meter = (levels: readonly number[]) =>
 
 // the module's own values: a reload starts them over, the strip itself lives in $.state
 const live = {
+  // the plugin's launcher, which finds parlar the way the command hooks do (PARLAR_BIN, the user
+  // install directories, npm); plain `parlar` from PATH where the launcher is a .cmd (Windows)
+  bin: 'parlar',
   watching: false,
   session: '',
   phase: 'stopped' as Phase,
@@ -65,11 +68,11 @@ function set($: EngineInterface, patch: Partial<Strip>) {
 }
 
 async function ctl($: EngineInterface, ...args: string[]) {
-  await $.process.run(['parlar', 'ctl', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
+  await $.process.run([live.bin, 'ctl', ...args], { timeoutMs: 5_000 }).catch(() => undefined)
 }
 
 async function refreshFocus($: EngineInterface) {
-  const r = await $.process.run(['parlar', 'ctl', 'state'], { timeoutMs: 2_000 }).catch(() => undefined)
+  const r = await $.process.run([live.bin, 'ctl', 'state'], { timeoutMs: 2_000 }).catch(() => undefined)
   if (!r || r.exitCode !== 0) return
   try {
     const st = JSON.parse(r.stdout) as { sessions?: { session?: string; focused: boolean }[] }
@@ -119,7 +122,7 @@ async function watch($: EngineInterface) {
   live.watching = true
   let buf = ''
   try {
-    for await (const { stream, text } of $.process.spawn({ argv: ['parlar', 'ctl', 'watch'] })) {
+    for await (const { stream, text } of $.process.spawn({ argv: [live.bin, 'ctl', 'watch'] })) {
       if (stream !== 'stdout') continue
       buf += text
       let nl: number
@@ -167,6 +170,8 @@ export const register: Register = on => {
     const started = await next(e)
     if (!e.isInteractive) return started
     live.session = await $.session.id()
+    const root = $.plugin.root
+    live.bin = root.includes('\\') ? 'parlar' : `${root}/bin/parlar`
     await update($, strip, () => IDLE)
     void watch($).catch(quiet)
     // reconnect after parlard starts or restarts
@@ -217,12 +222,13 @@ export const register: Register = on => {
             </Box>
           )}
           {!s.focused && (
+            // talk attaches a session that started before parlard, which focus alone cannot
             <Button
               key="focus"
               label="talk here"
               hotkey="t"
               plain
-              onPress={() => ctl($, 'focus', live.session)}
+              onPress={() => ctl($, 'talk', '--session', live.session)}
             />
           )}
           <Button
