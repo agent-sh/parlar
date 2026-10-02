@@ -52,6 +52,7 @@ type Event =
   | { ui: 'levels'; user: number; agent: number }
   | { ui: 'tool'; ok: boolean; name: string | null }
   | { ui: 'caption'; who: string; text: string; session?: string; partial?: boolean }
+  | { ui: 'notice'; text: string }
 
 export const meter = (levels: readonly number[]) =>
   levels
@@ -139,6 +140,9 @@ async function apply($: EngineInterface, ev: Event, now: number) {
         live.flareAt = now
         await set($, { flare: true })
       }
+      return
+    case 'notice':
+      $.ui.toast(ev.text, { timeoutMs: 12_000 })
       return
     case 'caption': {
       // a caption names its session; a partial, parlar's own line, or a daemon from before that

@@ -166,3 +166,19 @@ test('toasts say where the voice went and when parlard stops', async ($, on) => 
   expect(d.toasts[2]).toBe('parlard is back')
   d.release()
 })
+
+test('a daemon notice shows as a toast', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const d = daemon(
+    on,
+    [
+      { ui: 'phase', phase: 'speaking', mic_muted: false, voice_off: false },
+      { ui: 'notice', text: 'The mic clips on parlar own voice' },
+    ],
+    true,
+  )
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(100)
+  expect(d.toasts).toContain('The mic clips on parlar own voice')
+  d.release()
+})

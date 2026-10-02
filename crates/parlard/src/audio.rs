@@ -366,6 +366,9 @@ fn input<T: ToF32>(
             }
             mono.clear();
             mono.extend(data.chunks(ch).map(|f| f.iter().map(|s| s.f()).sum::<f32>() / ch as f32));
+            if data.iter().any(|s| s.f().abs() >= CLIP) {
+                MIC_CLIPPED_AT.store(clip_clock(), Ordering::Relaxed);
+            }
             let mut out = Vec::with_capacity(mono.len() * MIC_RATE as usize / rate as usize + 1);
             rs.process(&mono, &mut out);
             // a full queue means the listener is stuck; drop audio rather than block the device
@@ -379,6 +382,23 @@ fn input<T: ToF32>(
         },
         None,
     )?)
+}
+
+/// When the mic last delivered a clipped sample, in ms since `CLIP_EPOCH`; 0 for never.
+static MIC_CLIPPED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CLIP_EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// A sample this close to full scale has hit the converter's ceiling.
+const CLIP: f32 = 0.99;
+
+fn clip_clock() -> u64 {
+    CLIP_EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// The mic hit full scale within `d`. A clipped echo is a distortion the echo canceller cannot
+/// model, so what is left of it after cancellation can sound like speech.
+pub fn mic_clipped_within(d: Duration) -> bool {
+    let at = MIC_CLIPPED_AT.load(Ordering::Relaxed);
+    at != 0 && clip_clock().saturating_sub(at) <= d.as_millis() as u64
 }
 
 /// Speech waiting to be played, at 24 kHz, plus a level meter. Outlives device switches.
@@ -481,10 +501,22 @@ fn output<T: SizedSample + Send + 'static>(
     let mut dst = Vec::new();
     let mut played = Vec::new();
     let mut far = Vec::new();
+    let mut told = false;
     Ok(dev.build_output_stream(
         cfg,
-        move |out: &mut [T], _: &_| {
+        move |out: &mut [T], info: &cpal::OutputCallbackInfo| {
             p.mark_pulled();
+            // what is handed over now plays this much later; the echo canceller must wait for it
+            let ts = info.timestamp();
+            let lat = ts.playback.duration_since(ts.callback);
+            // a backend that reports no latency gives zero: keep the default then
+            if !lat.is_zero() && lat < std::time::Duration::from_secs(1) {
+                p.far.set_latency(lat);
+                if !told {
+                    told = true;
+                    eprintln!("speaker latency: {} ms", lat.as_millis());
+                }
+            }
             let frames = out.len() / ch;
             {
                 // pull just enough 24 kHz audio to cover this callback at the device rate
@@ -628,6 +660,15 @@ pub fn from_wavs(paths: Vec<std::path::PathBuf>, delay: f32, gap: f32, gate: Arc
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_clip_is_remembered_for_the_hold_and_then_forgotten() {
+        MIC_CLIPPED_AT.store(clip_clock(), Ordering::Relaxed);
+        assert!(mic_clipped_within(Duration::from_millis(300)));
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(!mic_clipped_within(Duration::from_millis(10)));
+    }
+
     use super::*;
 
     #[test]

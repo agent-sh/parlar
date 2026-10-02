@@ -73,6 +73,16 @@ enum Cmd {
     Service,
     /// Write a WAV through the capture cleanup (noise suppression, gain), for inspection.
     Clean { wav: std::path::PathBuf, out: std::path::PathBuf },
+    /// Run a mic recording through echo cancellation against what the speaker played, for tuning
+    /// on a real room: `far` is the played audio, already on the mic's timeline.
+    Echo {
+        far: std::path::PathBuf,
+        mic: std::path::PathBuf,
+        out: std::path::PathBuf,
+        /// Feed the far end this much earlier than the mic hears it, as the speaker callback does.
+        #[arg(long, default_value_t = 0)]
+        lead_ms: u32,
+    },
     /// Transcribe a WAV with the recognizer (Phonon-2, ONNX).
     Final {
         wav: std::path::PathBuf,
@@ -166,6 +176,27 @@ fn main() -> Result<()> {
             let (pcm, rate) = wav::read(&wav)?;
             let x = audio::resample(&pcm, rate, aec::RATE);
             let y = aec::Aec::cleanup_only().process(&x);
+            wav::write(&out, &y, aec::RATE)?;
+            return Ok(());
+        }
+        Some(Cmd::Echo { far, mic, out, lead_ms }) => {
+            let (f, fr) = wav::read(&far)?;
+            let (m, mr) = wav::read(&mic)?;
+            let f = audio::resample(&f, fr, aec::RATE);
+            let m = audio::resample(&m, mr, aec::RATE);
+            let lead = (aec::RATE * lead_ms / 1000) as usize;
+            let far_q = aec::Far::default();
+            let mut a = aec::Aec::new(far_q.clone());
+            let step = (aec::RATE / 100) as usize;
+            let mut y = Vec::with_capacity(m.len());
+            for (i, chunk) in m.chunks(step).enumerate() {
+                // the far end for the mic frame `lead` samples ahead has been played by now
+                let at = i * step + lead;
+                let from = at.min(f.len());
+                let to = (at + step).min(f.len());
+                far_q.push(&f[from..to]);
+                y.extend(a.process(chunk));
+            }
             wav::write(&out, &y, aec::RATE)?;
             return Ok(());
         }
@@ -295,6 +326,15 @@ async fn serve(cli: Cli) -> Result<()> {
                         eprintln!("hearing: {text}");
                         let st = state.lock().await;
                         let _ = st.ui().send(Ui::Caption { who: "user".into(), text, session: None, partial: true });
+                    }
+                    listen::Heard::Clipping => {
+                        eprintln!("the mic clips on the agent's voice; talking over it is off while it does");
+                        let st = state.lock().await;
+                        let _ = st.ui().send(Ui::Notice {
+                            text: "parlar's own voice overloads the mic, so talking over it is ignored while it \
+                                   speaks. Lower the speaker volume or the mic input gain to talk over it."
+                                .into(),
+                        });
                     }
                     listen::Heard::BargeIn => {
                         eprintln!("barge-in");

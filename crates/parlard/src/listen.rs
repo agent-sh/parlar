@@ -23,6 +23,8 @@ pub enum Heard {
     },
     /// The user started talking over the agent.
     BargeIn,
+    /// The mic clipped on the agent's own voice: talking over it cannot be told from its echo.
+    Clipping,
 }
 
 pub struct Config {
@@ -168,6 +170,9 @@ pub fn spawn(
 
 /// Continuous speech this long while the agent talks is the user cutting in.
 const BARGE_AFTER: Duration = Duration::from_millis(500);
+/// Mic audio waits in the queue a little before the listener reads it, so a clip is looked for
+/// this far before the audio just read.
+const CLIP_SLACK: Duration = Duration::from_millis(100);
 /// Quiet this long inside a turn is a pause: the turn so far is transcribed.
 const PAUSE: Duration = Duration::from_millis(300);
 /// Speech probability that counts as voice.
@@ -224,6 +229,10 @@ fn run(
     let mut last_voice = Instant::now();
     let mut voiced_since: Option<Instant> = None;
     let mut barged = false;
+    let mut line_clipped = false;
+    // the current turn started while the agent's voice could reach the mic
+    let mut turn_over_echo = false;
+    let mut clip_told = false;
     loop {
         if cfg.gate.load(Ordering::SeqCst) {
             closed_since = None;
@@ -261,7 +270,7 @@ fn run(
                     None => f,
                 };
                 peak = peak.max(audio::rms(&f));
-                let voiced = match vad.as_mut().map(|v| v.push(&f)) {
+                let mut voiced = match vad.as_mut().map(|v| v.push(&f)) {
                     Some(Ok(p)) => p.iter().any(|&x| x >= VOICED),
                     Some(Err(e)) => {
                         eprintln!("voice detector failed, falling back to a level threshold: {e:#}");
@@ -270,12 +279,38 @@ fn run(
                     }
                     None => audio::rms(&f) > 0.02,
                 };
+                // a mic driven past full scale by the agent's voice has lost the echo canceller's
+                // model and, with it, the user's words on top: nothing it hears until that line and
+                // its echo are over is evidence of the user
+                let echoing = agent_speaking.load(Ordering::SeqCst) || !echo.current().is_empty();
+                if !echoing {
+                    line_clipped = false;
+                } else if !line_clipped && audio::mic_clipped_within(got + CLIP_SLACK) {
+                    line_clipped = true;
+                    // a turn that began over the agent's voice began on its echo: drop it
+                    if in_turn && turn_over_echo {
+                        in_turn = false;
+                        paused = false;
+                        recent.buf.clear();
+                        lines.clear();
+                        ep = Endpointer::default();
+                        let _ = tx.send(Heard::Talking(false));
+                    }
+                    if !clip_told {
+                        clip_told = true;
+                        let _ = tx.send(Heard::Clipping);
+                    }
+                }
+                if line_clipped {
+                    voiced = false;
+                }
                 let now = Instant::now();
                 if voiced {
                     last_voice = now;
                     voiced_since.get_or_insert(now);
                     if !in_turn {
                         in_turn = true;
+                        turn_over_echo = echoing;
                         recent.buf.clear();
                         seg = Segments::default();
                         recent.push(&preroll.buf.drain(..).collect::<Vec<f32>>());

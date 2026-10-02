@@ -252,9 +252,16 @@ sees this session lose focus.
 - O3: asyncRewake timeout ceiling. The waiter must outlive long idle periods, or re-arm.
 - O4: Esc while a synchronous Stop hook blocks (Codex path).
 - O5: Hebrew. Moonshine v2 has no Hebrew; a second STT engine would be needed.
-- O6: echo cancellation is in (sonora AEC3, fed with what the speaker actually played, 47.8 dB
-  on a synthetic linear echo path). Not yet measured in a real room on laptop speakers; the text
-  echo guard stays as a second line.
+- O6: echo cancellation, measured on a laptop (built-in speakers and mic, 2026-10-02). At the
+  mic's +30 dB hardware gain the agent's voice drives the converter past full scale in about half
+  the 100 ms frames, and a clipped echo is beyond AEC3: its leftover bursts to the level of real
+  speech and the recognizer turns it into words. Two fixes. The far end now waits for the speaker
+  latency the stream reports (42 ms there): fed no earlier than its echo, AEC3 cancels nothing.
+  And while the mic clips on the agent's voice, the rest of that line and its 1.5 s tail are not
+  heard (a turn that began over the echo is dropped), with one notice that talking over it needs
+  a lower speaker volume or mic gain. The user's own speech clips there too, so nothing better is
+  possible at that gain. Without clipping (mic at +12 dB), AEC3 left 0.003 rms and heard nothing
+  false. `parlard echo <far> <mic> <out>` replays a recording through the canceller for tuning.
 - O7: Codex fresh-session wake: Codex has no asyncRewake, so a new Codex session hears voice only
   after its first turn. Its blocking Stop hook waits only while the conversation is on and that
   session has focus, and is released the moment either changes (verified live on 0.159). While
