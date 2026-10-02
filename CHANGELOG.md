@@ -1,47 +1,34 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed
-- Claude Code: the voice pane opens on, and follows, its newest line, and has a close button. The
-  strip keeps its line while idle (there is no spinner line to carry its buttons then) and steps
-  aside only during a turn.
-- Claude Code voice pane: the conversation fills it. "Talking to", "Mic" and "Speaker" are one line
-  each and open on a click, a pick closes them again, and mute, voice and stop or start sit on
-  the pane's status line instead of a row of their own. The strip's pane button closes the pane when it is open.
-- Claude Code strip: it takes a line of its own only while someone is talking. During a turn the
-  voice mark and its mute, stop and pane buttons sit at the end of Claude's own spinner line;
-  when idle the strip keeps its own line.
-- Claude Code strip: it stays one line. The phase word and meter keep a fixed width, a long
-  caption shows its last words instead of its first, and the labels and buttons that do not fit
-  drop out by priority (mute and stop stay).
-- Claude Code: parlar's "Got it, I'm still on this step" during a long tool call draws as a dim
-  note on that call's row, not as a "PostToolUse:Bash says" hook message.
-- parlard no longer hears its own voice as the user on laptop speakers. Its echo there drives the
-  mic past full scale, which no echo canceller can undo; while that happens, parlard ignores the
-  mic for the rest of the line and its echo tail, and says once that talking over it needs a lower
-  speaker volume or mic gain. The echo canceller also waits for the speaker's reported latency now.
-- parlard no longer exits at startup when the conversation was saved as on and the mic cannot
-  open. It logs the error and keeps running, as `parlar ctl on` already did, and the mic
-  supervisor retries the device every few seconds until it opens.
+## [0.1.9] - 2026-10-02
 
 ### Added
+- Claude Code: a voice strip above the prompt while someone is talking: the phase, a level meter,
+  the end of the line being heard or spoken, and mute, voice, stop and pane buttons (ctrl+x tab,
+  then the hotkey). It stays one line at any width. During a turn the voice mark and its buttons
+  sit at the end of Claude's own spinner line instead; idle, the strip keeps its line. Works in
+  any terminal, so KDE, macOS and SSH sessions get an indicator in the session itself.
+- Claude Code: the spoken exchange draws in the transcript as "you ▸" and "parlar ▸" lines on the
+  row that carried it, instead of "PostToolUse:... says" hook messages. parlar's own "Got it, I'm
+  still on this step" during a long tool call is a dim note on that call's row. Hooks see
+  `PARLAR_ROWS=1` from the module and leave those lines to it.
+- Claude Code: `/parlar` (or the pane button) opens the voice pane: the conversation, newest line
+  at the bottom, with mute, voice, stop or start and close on its status line, and "Talking to",
+  "Mic" and "Speaker" lines that open on a click to switch session or device.
+- Claude Code: toasts when parlard stops in the middle of a conversation, when it is back, when
+  typing in another session moves the voice there, and when the mic overloads on parlar's voice.
 - `parlard echo <far> <mic> <out>`: run a mic recording through the echo canceller, for tuning.
-- Claude Code: toasts when parlard stops in the middle of a conversation, when it is back, and
-  when typing in another session moves the voice there ("Voice moved to ginza").
-- Claude Code: `/parlar` (or `p` on the strip) opens the voice pane: the conversation heard and
-  spoken while the session had focus, the sessions parlard knows with "talk there" for each, mic
-  and speaker pickers, and mute, voice and start or stop.
-- Claude Code: the spoken exchange draws as clean "you" and "parlar" lines in the transcript, on
-  the row that carried it, in place of "PostToolUse:... says" hook messages. The voice wake row
-  shows what was heard. Hooks see `PARLAR_ROWS=1` from the module and leave those lines to it; the
-  other notes (where the voice moved, the spoken "got it") still print as before.
-- Claude Code: a voice strip above the prompt while a conversation is on. It shows the phase, a
-  level meter, the last line heard or spoken, and mute, voice, stop and "talk here" buttons. It
-  works in any terminal, so KDE, macOS and SSH sessions get an indicator in the session itself.
 - GNOME indicator: "Close indicator" in the right-click menu, also when parlard is not running. It
   disables the extension, like the Windows and macOS overlays' item; `gnome-extensions enable
   parlar@avifenesh` brings it back.
+
+### Fixed
+- parlard no longer hears its own voice as the user on laptop speakers. Its echo there drives the
+  mic past full scale, which no echo canceller can undo; while that happens, parlard ignores the
+  mic for the rest of the line and its echo tail. The echo canceller also waits for the
+  speaker's reported latency now.
+- parlard no longer exits at startup when the conversation was saved as on and the mic cannot
+  open. It keeps running, as `parlar ctl on` already did, and retries the mic every few seconds.
 
 ## [0.1.8] - 2026-10-01
 
