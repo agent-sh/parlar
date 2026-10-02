@@ -77,7 +77,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 test('strip offers focus when another session has it', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000 })
-  const d = daemon(on, [{ ui: 'phase', phase: 'ready', mic_muted: false, voice_off: false }], false)
+  const d = daemon(on, [{ ui: 'phase', phase: 'listening', mic_muted: false, voice_off: false }], false)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await clock.advance(2_000)
   const ui = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
@@ -234,5 +234,32 @@ test("parlar's note during a long call draws dim on that call's row", async ($, 
   expect(line).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /parlar ▸ Got it/ })).toBeUndefined()
   await ui.unmount()
+  d.release()
+})
+
+const SPINNER = { component: 'Spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' } } as const
+const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
+
+test('while nobody talks the strip leaves its line and rides the spinner and the hint', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  let tail: string | undefined
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    tail = (e.props as { tail?: string }).tail
+    return $.ui.resolve(e).Text({ children: 'hint' })
+  })
+  const d = daemon(on, [{ ui: 'phase', phase: 'working', mic_muted: false, voice_off: false }], true)
+  await $.session.start({ cwd: '/w/parlar', surface: 'terminal', isInteractive: true })
+  await clock.advance(2_000)
+  const band = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...BAND })
+  expect(await band.find({ key: 'mute' })).toBeUndefined()
+  await band.unmount()
+  const spin = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...SPINNER } as never)
+  expect(await spin.find({ type: 'Text', text: /● voice/ })).toBeDefined()
+  await spin.press({ key: 'spin-mute' })
+  expect(d.ran.map(a => a.slice(1))).toContainEqual(['ctl', 'mute'])
+  await spin.unmount()
+  const hint = await $.ui.mount({ plugin: 'parlar', surface: 'terminal', ...HINT } as never)
+  expect(tail).toMatch(/● voice ready · \/parlar/)
+  await hint.unmount()
   d.release()
 })
