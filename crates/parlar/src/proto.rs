@@ -276,6 +276,10 @@ pub struct Device {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "ui", rename_all = "snake_case")]
 pub enum Ui {
+    /// Something the person should fix, shown once: an indicator may show it, the strip toasts it.
+    Notice {
+        text: String,
+    },
     Phase {
         phase: Phase,
         mic_muted: bool,

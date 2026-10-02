@@ -2,6 +2,7 @@
 //! the user can talk over it on speakers, not only on headphones.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sonora::config::{
@@ -13,17 +14,40 @@ pub const RATE: u32 = 16000;
 const FRAME: usize = (RATE / 100) as usize;
 /// Far-end audio older than this is dropped; the canceller's delay estimator covers far less.
 const FAR_CAP: usize = RATE as usize;
-/// Far-end audio kept beyond what the pending mic audio needs (40 ms), to absorb the speaker's
-/// callback size. More would leave the far end behind the echo in the mic.
-const FAR_SLACK: usize = (RATE / 25) as usize;
+/// Far-end audio kept beyond what the pending mic audio needs, on top of the speaker's own
+/// latency: the mic's capture latency and the callback size. AEC3 cancels well with the far end
+/// up to a few hundred ms ahead of the echo, and not at all once it falls behind.
+const FAR_SLACK: usize = (RATE / 20) as usize;
+/// The speaker latency assumed until the stream reports one: a far end that leads by too much
+/// costs a little cancellation, one that lags costs all of it.
+const DEFAULT_LATENCY: usize = (RATE / 10) as usize;
 
 /// What the speaker actually played, at 16 kHz, waiting to be matched against the mic.
-#[derive(Clone, Default)]
-pub struct Far(Arc<Mutex<VecDeque<f32>>>);
+#[derive(Clone)]
+pub struct Far(Arc<FarQueue>);
+
+struct FarQueue {
+    q: Mutex<VecDeque<f32>>,
+    /// Samples from the speaker callback handing audio over to it reaching the speaker.
+    latency: AtomicUsize,
+}
+
+impl Default for Far {
+    fn default() -> Far {
+        Far(Arc::new(FarQueue { q: Mutex::default(), latency: AtomicUsize::new(DEFAULT_LATENCY) }))
+    }
+}
 
 impl Far {
+    /// The speaker's output latency, as its stream reports it: the far end pushed now is heard
+    /// that much later, so that much more of it must wait for the echo.
+    pub fn set_latency(&self, latency: std::time::Duration) {
+        let n = (latency.as_secs_f64() * RATE as f64) as usize;
+        self.0.latency.store(n.min(FAR_CAP / 2), Ordering::Relaxed);
+    }
+
     pub fn push(&self, pcm: &[f32]) {
-        let mut q = self.0.lock().unwrap();
+        let mut q = self.0.q.lock().unwrap();
         q.extend(pcm);
         let over = q.len().saturating_sub(FAR_CAP);
         q.drain(..over);
@@ -33,8 +57,9 @@ impl Far {
     /// A backlog beyond that plus the slack (the speaker kept playing while no mic audio came
     /// in) is dropped from the old end so the far end stays level with the mic.
     fn take(&self, out: &mut [f32], ahead: usize) {
-        let mut q = self.0.lock().unwrap();
-        let over = q.len().saturating_sub(out.len() + ahead + FAR_SLACK);
+        let keep = out.len() + ahead + FAR_SLACK + self.0.latency.load(Ordering::Relaxed);
+        let mut q = self.0.q.lock().unwrap();
+        let over = q.len().saturating_sub(keep);
         q.drain(..over);
         for o in out.iter_mut() {
             *o = q.pop_front().unwrap_or(0.0);
@@ -42,7 +67,7 @@ impl Far {
     }
 
     pub fn clear(&self) {
-        self.0.lock().unwrap().clear();
+        self.0.q.lock().unwrap().clear();
     }
 }
 
@@ -73,10 +98,8 @@ impl Aec {
             echo_canceller: echo.then(EchoCanceller::default),
             high_pass_filter: Some(HighPassFilter::default()),
             noise_suppression: Some(NoiseSuppression { level: NoiseSuppressionLevel::High, ..Default::default() }),
-            gain_controller2: Some(GainController2 {
-                adaptive_digital: Some(AdaptiveDigital::default()),
-                ..Default::default()
-            }),
+            gain_controller2: (std::env::var_os("PARLAR_AEC_NO_GAIN").is_none())
+                .then(|| GainController2 { adaptive_digital: Some(AdaptiveDigital::default()), ..Default::default() }),
             ..Default::default()
         };
         let mut apm = AudioProcessing::builder().config(config).capture_config(sc).render_config(sc).build();
@@ -164,12 +187,17 @@ mod tests {
         f.push(&vec![0.5; RATE as usize]);
         let mut out = vec![0.0; FRAME];
         f.take(&mut out, FRAME * 2);
-        assert_eq!(f.0.lock().unwrap().len(), FRAME * 2 + FAR_SLACK);
+        assert_eq!(f.0.q.lock().unwrap().len(), FRAME * 2 + FAR_SLACK + DEFAULT_LATENCY);
+        // a speaker that reports its latency keeps that much more waiting for the echo
+        f.set_latency(std::time::Duration::from_millis(200));
+        f.push(&vec![0.5; RATE as usize]);
+        f.take(&mut out, FRAME * 2);
+        assert_eq!(f.0.q.lock().unwrap().len(), FRAME * 2 + FAR_SLACK + RATE as usize / 5);
         // a short backlog is left alone
         let g = Far::default();
         g.push(&vec![0.5; FRAME * 3]);
         g.take(&mut out, 0);
-        assert_eq!(g.0.lock().unwrap().len(), FRAME * 2);
+        assert_eq!(g.0.q.lock().unwrap().len(), FRAME * 2);
         g.clear();
         g.take(&mut out, 0);
         assert!(out.iter().all(|&v| v == 0.0));

@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- parlard no longer hears its own voice as the user on laptop speakers. Its echo there drives the
+  mic past full scale, which no echo canceller can undo; while that happens, parlard ignores the
+  mic for the rest of the line and its echo tail, and says once that talking over it needs a lower
+  speaker volume or mic gain. The echo canceller also waits for the speaker's reported latency now.
+- parlard no longer exits at startup when the conversation was saved as on and the mic cannot
+  open. It logs the error and keeps running, as `parlar ctl on` already did, and the mic
+  supervisor retries the device every few seconds until it opens.
+
 ### Added
+- `parlard echo <far> <mic> <out>`: run a mic recording through the echo canceller, for tuning.
 - Claude Code: toasts when parlard stops in the middle of a conversation, when it is back, and
   when typing in another session moves the voice there ("Voice moved to ginza").
 - Claude Code: `/parlar` (or `p` on the strip) opens the voice pane: the conversation heard and
@@ -18,11 +28,6 @@
 - GNOME indicator: "Close indicator" in the right-click menu, also when parlard is not running. It
   disables the extension, like the Windows and macOS overlays' item; `gnome-extensions enable
   parlar@avifenesh` brings it back.
-
-### Fixed
-- parlard no longer exits at startup when the conversation was saved as on and the mic cannot
-  open. It logs the error and keeps running, as `parlar ctl on` already did, and the mic
-  supervisor retries the device every few seconds until it opens.
 
 ## [0.1.8] - 2026-10-01
 

@@ -368,7 +368,7 @@ impl State {
                     self.agent = self.agent.max(agent);
                 }
                 Event::Ui(Ui::Tool { ok, .. }) => self.swarm.flare(!ok),
-                Event::Ui(Ui::Caption { .. }) => {}
+                Event::Ui(Ui::Caption { .. } | Ui::Notice { .. }) => {}
             }
         }
     }
