@@ -13,7 +13,7 @@ categories = ["gui", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1"
-parlar = { path = "../parlar", version = "0.1.9" }
+parlar = { path = "../parlar", version = "0.1.10" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -34,4 +34,3 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSView", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSGraphics", "NSScreen", "NSImage", "NSImageRep", "NSColor", "NSRunningApplication", "NSCell", "objc2-core-graphics", "objc2-core-foundation"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGColorSpace", "CGDataProvider"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
-

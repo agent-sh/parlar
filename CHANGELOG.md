@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10] - 2026-10-04
+
+### Fixed
+- Concurrent calls to `parlar-moonshine::Tts` now keep streaming chunks valid while their audio,
+  text and metadata are copied into Rust-owned values. Each synthesizer serializes its native
+  operations through the full copy. Public method signatures stay the same.
+
 ## [0.1.9] - 2026-10-02
 
 ### Added
