@@ -9,7 +9,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::Path;
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -44,7 +44,7 @@ mod sys {
         ($($name:ident: fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
             pub struct Api {
                 #[cfg(target_os = "linux")]
-                _lib: libloading::Library,
+                pub(super) _lib: libloading::Library,
                 $(pub $name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
             }
 
@@ -225,12 +225,10 @@ fn parse_string_array(json: &str) -> Vec<String> {
     out
 }
 
+/// A synthesizer whose native calls and borrowed chunk copies are serialized together.
 pub struct Tts {
-    h: i32,
+    h: Mutex<i32>,
 }
-
-// SAFETY: calls on one synthesizer are serialized by the library
-unsafe impl Send for Tts {}
 
 pub enum Next {
     Audio { pcm: Vec<f32>, sample_rate: i32, text: String, utterance: u64, last: bool },
@@ -262,7 +260,11 @@ impl Tts {
                 HEADER_VERSION,
             )
         })?;
-        Ok(Tts { h })
+        Ok(Tts { h: Mutex::new(h) })
+    }
+
+    fn handle(&self) -> Result<MutexGuard<'_, i32>> {
+        self.h.lock().map_err(|_| anyhow!("TTS handle lock is poisoned"))
     }
 
     /// Synthesize a whole text in one call. Slower to first audio than streaming, but with the
@@ -270,9 +272,10 @@ impl Tts {
     pub fn synthesize(&self, text: &str) -> Result<(Vec<f32>, i32)> {
         let t = CString::new(text)?;
         let (mut audio, mut size, mut rate): (*mut f32, u64, i32) = (ptr::null_mut(), 0, 0);
+        let h = self.handle()?;
         // SAFETY: valid handle and string; the buffer is malloc'd by the library and freed below
         check(unsafe {
-            (api()?.moonshine_text_to_speech)(self.h, t.as_ptr(), ptr::null(), 0, &mut audio, &mut size, &mut rate)
+            (api()?.moonshine_text_to_speech)(*h, t.as_ptr(), ptr::null(), 0, &mut audio, &mut size, &mut rate)
         })?;
         if audio.is_null() {
             return Ok((Vec::new(), rate));
@@ -286,40 +289,49 @@ impl Tts {
 
     pub fn push(&self, text: &str) -> Result<()> {
         let t = CString::new(text)?;
+        let h = self.handle()?;
         // SAFETY: valid handle and string
-        check(unsafe { (api()?.moonshine_tts_push_text)(self.h, t.as_ptr()) })?;
+        check(unsafe { (api()?.moonshine_tts_push_text)(*h, t.as_ptr()) })?;
         Ok(())
     }
 
     pub fn flush(&self) -> Result<()> {
+        let h = self.handle()?;
         // SAFETY: valid handle
-        check(unsafe { (api()?.moonshine_tts_flush)(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_flush)(*h) })?;
         Ok(())
     }
 
     pub fn end_input(&self) -> Result<()> {
+        let h = self.handle()?;
         // SAFETY: valid handle
-        check(unsafe { (api()?.moonshine_tts_end_input)(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_end_input)(*h) })?;
         Ok(())
     }
 
     /// Barge-in: drop the reply in flight.
     pub fn cancel(&self) -> Result<()> {
+        let h = self.handle()?;
         // SAFETY: valid handle, safe when idle
-        check(unsafe { (api()?.moonshine_tts_cancel)(self.h) })?;
+        check(unsafe { (api()?.moonshine_tts_cancel)(*h) })?;
         Ok(())
     }
 
     pub fn next(&self) -> Result<Next> {
+        // The native lock ends when the C call returns. Keep our lock until every borrowed
+        // field has been copied, since another call on this handle can invalidate the chunk.
+        let h = self.handle()?;
         let mut out: *const sys::Chunk = ptr::null();
-        // SAFETY: valid handle; the chunk is valid until the next call, so we copy it
-        let code = unsafe { (api()?.moonshine_tts_next_chunk)(self.h, 0, &mut out) };
+        // SAFETY: valid handle; the lock excludes calls that could invalidate the chunk
+        let code = unsafe { (api()?.moonshine_tts_next_chunk)(*h, 0, &mut out) };
+        #[cfg(all(test, target_os = "linux"))]
+        tests::before_chunk_copy();
         match code {
             0 => {
                 if out.is_null() {
                     bail!("moonshine_tts_next_chunk reported success but returned a null chunk");
                 }
-                // SAFETY: checked non-null above; the chunk stays valid until the next call
+                // SAFETY: checked non-null above; our lock keeps the chunk valid during copying
                 let c = unsafe { &*out };
                 let pcm = if c.audio_data.is_null() || c.audio_data_count == 0 {
                     Vec::new()
@@ -349,8 +361,12 @@ impl Tts {
 impl Drop for Tts {
     fn drop(&mut self) {
         if let Ok(a) = api() {
-            // SAFETY: handle owned by us
-            unsafe { (a.moonshine_free_tts_synthesizer)(self.h) }
+            let h = *self.h.get_mut().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: exclusive access to the owned handle, including after a poisoned lock
+            unsafe { (a.moonshine_free_tts_synthesizer)(h) }
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;
