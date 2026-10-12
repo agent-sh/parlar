@@ -121,8 +121,13 @@ fn call(daemon: &mut Option<Client>, harness: Harness, msg: &Value) -> Value {
                     "Not spoken: this session does not have voice focus or voice output is off. Shown as text."
                 });
                 if !items.is_empty() {
-                    s.push_str("\nThe user said meanwhile:\n");
-                    s.push_str(&format::utterances(&items));
+                    if harness == Harness::Other {
+                        s.push('\n');
+                        s.push_str(&format::latest_spoken(&items));
+                    } else {
+                        s.push_str("\nThe user said meanwhile:\n");
+                        s.push_str(&format::utterances(&items));
+                    }
                 }
                 return text_result(&s, false);
             }

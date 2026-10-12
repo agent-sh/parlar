@@ -99,7 +99,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             if !items.is_empty() {
                 let reason = format!(
                     "The user asked you to stop, so this tool call was not run.\n{}",
-                    format::utterances(&items)
+                    delivery(harness, &items)
                 );
                 print_json(&json!({
                     "hookSpecificOutput": {
@@ -127,7 +127,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
                 let name = if event == Event::PostTool { "PostToolUse" } else { "PostToolUseFailure" };
                 out.insert(
                     "hookSpecificOutput".into(),
-                    json!({ "hookEventName": name, "additionalContext": format::utterances(&items) }),
+                    json!({ "hookEventName": name, "additionalContext": delivery(harness, &items) }),
                 );
             }
             if shows {
@@ -141,7 +141,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             let mut out = Map::new();
             if !items.is_empty() {
                 out.insert("decision".into(), json!("block"));
-                out.insert("reason".into(), json!(format::utterances(&items)));
+                out.insert("reason".into(), json!(delivery(harness, &items)));
             }
             if shows {
                 show(&mut c, &o, &mut out);
@@ -155,7 +155,7 @@ pub fn run(event: Event, harness: Harness) -> Result<i32> {
             drop(c);
             let items = wait_for(&o, true, false);
             if !items.is_empty() {
-                print_json(&json!({ "decision": "block", "reason": format::utterances(&items) }));
+                print_json(&json!({ "decision": "block", "reason": delivery(harness, &items) }));
             }
         }
         Event::Interrupt => {
@@ -232,6 +232,13 @@ fn show(c: &mut Client, o: &Origin, out: &mut Map<String, Value>) {
     {
         out.insert("systemMessage".into(), json!(lines.join("\n")));
     }
+}
+
+/// How delivered speech is worded for this harness. Muse presents a foreign Stop reason
+/// as replaceable developer context inside the same turn, where transcript-style tags read as
+/// lines to continue; it arrives as Harness::Other and gets explicit newest-message wording.
+fn delivery(harness: Harness, items: &[Utterance]) -> String {
+    if harness == Harness::Other { format::latest_spoken(items) } else { format::utterances(items) }
 }
 
 fn items(r: Response) -> Vec<Utterance> {
