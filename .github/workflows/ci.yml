@@ -270,18 +270,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell scripts
-        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parlar && sh -n plugin/codex/bin/parlar
+        run: sh -n scripts/install.sh && sh -n plugin/claude/bin/parlar && sh -n plugin/codex/bin/parlar && sh -n plugin/muse/bin/parlar
       - name: Manifests parse
         run: |
           for f in .claude-plugin/marketplace.json plugin/claude/.claude-plugin/plugin.json plugin/claude/.mcp.json \
                    plugin/claude/hooks/hooks.json plugin/codex/.codex-plugin/plugin.json plugin/codex/.mcp.json \
-                   plugin/codex/hooks/hooks.json shell/gnome/parlar@avifenesh/metadata.json; do
+                   plugin/codex/hooks/hooks.json plugin/muse/.claude-plugin/plugin.json plugin/muse/.mcp.json \
+                   plugin/muse/hooks/hooks.json shell/gnome/parlar@avifenesh/metadata.json; do
             python3 -m json.tool "$f" > /dev/null
           done
       - name: Plugin and npm versions match Cargo.toml
         run: |
           want="$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-          for f in plugin/claude/.claude-plugin/plugin.json plugin/codex/.codex-plugin/plugin.json package.json; do
+          for f in plugin/claude/.claude-plugin/plugin.json plugin/codex/.codex-plugin/plugin.json plugin/muse/.claude-plugin/plugin.json package.json; do
             got="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$f")"
             test "$got" = "$want" || { echo "$f is $got, Cargo.toml is $want" >&2; exit 1; }
           done

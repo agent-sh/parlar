@@ -17,7 +17,7 @@ Part of agent-sh. Design and decisions: `docs/DESIGN.md`. Indicator mockups:
   (libloading). `parlard fetch` downloads the pinned release (sha256 checked) into
   `$XDG_DATA_HOME/parlar/lib`; `models::lib_dir` also looks next to the binary and in
   `lib/parlar` under the install prefix (packages), or takes `PARLAR_LIB_DIR`. Nothing links it, so `cargo install` works.
-- `plugin/claude`, `plugin/codex`: harness plugins. `bin/parlar` is a committed shell launcher
+- `plugin/claude`, `plugin/codex`, `plugin/muse`: harness plugins. `bin/parlar` is a committed shell launcher
   that runs the installed binary and keeps hooks silent before install; the install script
   replaces it with the real binary in the local marketplace copy.
 - `shell/gnome`: the GNOME Shell indicator (swarm). `scripts/install.sh`: per-user install.

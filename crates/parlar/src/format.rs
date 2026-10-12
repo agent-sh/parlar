@@ -5,7 +5,7 @@ use crate::proto::Utterance;
 /// MCP server instructions. Codex prioritizes the first 512 characters and Claude Code truncates
 /// at 2048, so the load-bearing rule comes first.
 pub const INSTRUCTIONS: &str = "\
-When voice mode is on (you receive [voice] messages), talk to the user only through the say tool: \
+When voice mode is on (you receive [voice] messages, or spoken messages delivered as context), talk to the user only through the say tool: \
 short spoken sentences, never code, file paths, logs or markdown. Before a long action, say what \
 you are about to do. Answer questions directly. Keep tool calls, diffs and results in the session \
 as usual; say only what a colleague would say out loud while working.
@@ -15,11 +15,11 @@ Details:
 take), question (you need their input; then stop and wait).
 - One to three sentences per call. Name files by their short name, not the full path. Round \
 numbers. Never read code aloud.
-- [voice] messages are speech recognition output and may contain recognition errors. When the \
+- Spoken messages are speech recognition output and may contain recognition errors. When the \
 user corrects themselves, the last version wins. Use the repo context to fix misheard names.
-- A [voice] message that arrives while you work is steering: take it into account right away.
+- A spoken message that arrives while you work is steering: take it into account right away.
 - If the user says stop, stop the current action and say what state things are in.
-- say returns anything the user said meanwhile; treat it like a new [voice] message.
+- say returns anything the user said meanwhile; treat it like a new spoken message.
 - The plugin prints the spoken exchange in the session; do not restate it in text.";
 
 /// Reminder added when voice mode is switched on for a running session.
@@ -28,6 +28,48 @@ in the parlar server instructions: short spoken sentences, no code or paths.";
 
 /// Closes every delivery: models drift back to plain text replies without it.
 pub const REPLY_CUE: &str = "(Reply out loud with the say tool.)";
+
+/// Delivery wording for harnesses that present a Stop reason as context rather than as a new
+/// user message (Muse's foreign-hook translation): no transcript tags for the model to
+/// continue, and the newest speech is named as the only thing to answer.
+pub fn latest_spoken(items: &[Utterance]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "The user just spoke. Treat this as their newest message; it supersedes earlier spoken \
+         messages. Do not repeat or continue a transcript. They said:",
+    );
+    if items.len() > 1 {
+        out.push_str(
+            " (In order; the last is the newest, earlier ones are context it may revise. \
+             If they ask distinct things, answer each.)",
+        );
+    }
+    if items.iter().any(|u| u.text.trim().starts_with(ACTIVATED)) {
+        out.push_str("\nVoice mode was just switched on for this session.");
+    }
+    for u in items {
+        let text = u.text.trim();
+        let text = text.strip_prefix(ACTIVATED).map_or(text, |rest| rest.trim_start());
+        out.push_str(&format!("\n\"{}\"", text.trim()));
+        if u.revises.is_some() {
+            out.push_str(" (This continues or corrects their previous spoken message; this newest wording wins.)");
+        }
+        if let Some(cut) = u.interrupted_after.as_ref().filter(|c| !c.trim().is_empty()) {
+            out.push_str(&format!("\n(they talked over you; you had said: \"{}\")", cut.trim()));
+        }
+        if let Some(heard) = &u.heard {
+            out.push_str(&format!(
+                "\n(heard: \"{}\". Speech recognition, may contain errors. When the user corrects \
+                 themselves, the last version wins.)",
+                heard.trim()
+            ));
+        }
+    }
+    out.push_str("\nAnswer this newest message now out loud with the say tool.");
+    out
+}
 
 pub fn utterances(items: &[Utterance]) -> String {
     let mut out = String::new();
@@ -234,6 +276,46 @@ mod tests {
         // a multibyte character across the cut must not panic
         assert!(opening(&format!("{}é{}", "a".repeat(239), " b".repeat(20))).len() <= 243);
         assert!(opening(&"日本語".repeat(40)).ends_with("..."));
+    }
+
+    #[test]
+    fn latest_spoken_is_an_instruction_not_a_transcript() {
+        let u = Utterance {
+            id: 7,
+            text: format!("{ACTIVATED}\nwhat are we doing today"),
+            heard: None,
+            revises: Some(6),
+            interrupted_after: None,
+        };
+        let s = latest_spoken(&[u]);
+        assert!(s.contains("newest message"), "{s}");
+        assert!(s.contains("\"what are we doing today\""), "{s}");
+        assert!(s.contains("newest wording wins"), "{s}");
+        assert!(!s.contains("[voice"), "transcript tags invite continuation: {s}");
+        assert!(!s.contains(ACTIVATED), "activation rides MCP instructions already: {s}");
+        assert!(s.contains("Voice mode was just switched on"), "activation is still named: {s}");
+        assert!(latest_spoken(&[]).is_empty());
+    }
+
+    #[test]
+    fn latest_spoken_renders_heard_interruptions_and_batches() {
+        let items = vec![
+            Utterance {
+                id: 1,
+                text: "first question".into(),
+                heard: Some("first qestion".into()),
+                revises: None,
+                interrupted_after: Some("I was saying".into()),
+            },
+            Utterance { id: 2, text: "second question".into(), heard: None, revises: None, interrupted_after: None },
+        ];
+        let s = latest_spoken(&items);
+        assert!(s.contains("\"first question\""), "{s}");
+        assert!(s.contains("heard: \"first qestion\""), "{s}");
+        assert!(s.contains("they talked over you; you had said: \"I was saying\""), "{s}");
+        assert!(s.contains("\"second question\""), "{s}");
+        assert!(s.contains("If they ask distinct things, answer each"), "{s}");
+        assert!(!s.contains("Voice mode was just switched on"), "{s}");
     }
 
     #[test]

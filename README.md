@@ -61,6 +61,7 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 | Audio | PipeWire |
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
+| Muse | say tool, mid-turn steering, idle wake through the blocking Stop waiter, which holds the turn open while a conversation is on |
 | Indicator | GNOME Shell 50 on Linux; `parlar-overlay` on Windows and macOS. Other Linux desktops work without the floating indicator |
 | macOS (Apple silicon) | in progress: on CI it builds, fetches, speaks, recognizes, loads its launchd agents and runs the plugin paths, and the floating indicator starts; the mic, the speaker, the indicator on a real desktop and Claude Code itself are untested on a real Mac |
 
@@ -175,6 +176,21 @@ Trust the parlar hooks once from Codex's hooks review prompt. Codex has no backg
 brand-new Codex session hears you after its first turn; after that, speaking continues the
 conversation. Start with `parlar ctl talk --session <id> --harness codex`, or from the indicator
 menu.
+
+### Muse
+
+```
+muse plugins install ~/.local/share/parlar/marketplace/muse/parlar --scope user
+muse plugins approve parlar
+```
+
+Approve any capability still listed as `review_needed` by `muse plugins inspect parlar`, then
+start a new `muse` session and run `/parlar:talk`. Muse does not wake a model from a background
+hook, so this plugin uses the blocking Stop waiter like Codex: while a conversation is on, the
+Stop hook holds the turn open, and your speech continues it. When voice is off the waiter returns
+at once, so ordinary turns never hang. Muse presents a Stop reason as updated context inside the
+same turn rather than as a new user message, so parlar words deliveries to Muse as an explicit
+newest spoken message instead of transcript lines.
 
 ## Use
 

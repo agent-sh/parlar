@@ -61,6 +61,8 @@ cat > "$MARKET/codex/.agents/plugins/marketplace.json" <<JSON
   "plugins": [{ "name": "parlar", "source": "./parlar" }]
 }
 JSON
+# Muse installs a plugin straight from a path, so no marketplace file is needed.
+plugin muse "$MARKET/muse/parlar"
 
 # libmoonshine (pinned, sha256 checked) and the models, into $DATA/parlar
 "$BIN/parlard" fetch
@@ -91,6 +93,12 @@ Codex:
   codex plugin marketplace add "$MARKET/codex"
   codex plugin add parlar@parlar
   Then trust the parlar hooks once from the hooks review prompt.
+
+Muse:
+  muse plugins install "$MARKET/muse/parlar" --scope user
+  muse plugins approve parlar
+  Approve any capability still listed as review_needed by: muse plugins inspect parlar
+  Then start a new muse session and run /parlar:talk.
 
 GNOME indicator (Wayland picks up new extensions after you log out and back in):
   gnome-extensions enable parlar@avifenesh
