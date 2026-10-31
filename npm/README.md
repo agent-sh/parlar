@@ -1,13 +1,13 @@
 # @agent-sh/parlar
 
 npm package for [parlar](https://github.com/agent-sh/parlar): a voice conversation mode for Claude
-Code and Codex. Install it, and parlar and parlard come from the matching GitHub release, checked
-by sha256.
+Code, Codex and Muse. Install it, and parlar and parlard come from the matching GitHub release,
+checked by sha256.
 
 ```
 npm install -g @agent-sh/parlar
 parlard fetch      # speech models and libmoonshine, about 800 MB, once
-parlard service    # run parlard as a systemd user service
+parlard service    # start parlard at login (systemd, launchd, or the Run key on Windows)
 ```
 
 Then, in Claude Code:
@@ -20,8 +20,8 @@ Then, in Claude Code:
 If your npm blocks install scripts, add `--allow-scripts=@agent-sh/parlar`; without the script
 the package has no binaries.
 
-Linux only, x64 and arm64. The full documentation is in the
-[repository README](https://github.com/agent-sh/parlar#readme).
+Builds: Linux x64 and arm64, Windows x64, macOS arm64 (in progress). The full documentation is
+in the [repository README](https://github.com/agent-sh/parlar#readme).
 
 Environment variables for the installer:
 

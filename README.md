@@ -14,10 +14,10 @@
 <p align="center"><img src="docs/demo.gif" alt="parlar in a Claude Code session: the user asks out loud to run the tests, the swarm turns blue while they talk, the agent runs them, the user steers mid-task, and the agent answers out loud in amber" width="960"></p>
 <p align="center"><sub>A staged demo (<a href="design/demo.html">design/demo.html</a>): the session and the swarm are drawn from a script, not captured.</sub></p>
 
-parlar is a voice conversation mode for Claude Code and Codex. You speak, and the session hears you
-whether it is idle or in the middle of work. It answers out loud in short sentences, while tool
-calls, diffs and logs stay in the terminal as usual. The spoken exchange is printed in the session,
-so you can read back what was said.
+parlar is a voice conversation mode for Claude Code, Codex and Muse. You speak, and the session
+hears you whether it is idle or in the middle of work. It answers out loud in short sentences, while
+tool calls, diffs and logs stay in the terminal as usual. The spoken exchange is printed in the
+session, so you can read back what was said.
 
 Everything runs locally on the CPU. No audio and no transcript leaves your machine.
 
@@ -58,7 +58,7 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
 |---|---|
 | Linux x86_64, aarch64 | supported (prebuilt binaries and crates) |
 | Windows x86_64 | supported: daemon, voice, recognizer, named pipe, login service, plugin launchers and the floating indicator (`parlar-overlay`), tested on Windows 11 |
-| Audio | PipeWire |
+| Audio | PipeWire on Linux; the system default (WASAPI, Core Audio) on Windows and macOS |
 | Claude Code | full: idle wake, mid-turn steering, spoken stop, transcript in the session |
 | Codex | say tool, mid-turn steering, blocking Stop waiter. A brand-new session hears you after its first turn |
 | Muse | say tool, mid-turn steering, idle wake through the blocking Stop waiter, which holds the turn open while a conversation is on |
