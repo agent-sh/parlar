@@ -287,7 +287,7 @@ sees this session lose focus.
   keeps voice focus.
 - D11 (2026-10-01): Moonshine v2 Small failed on the owner's real speech. Recognition is now
   Phonon-2 (Fermion Research, a 2-bit derivative of Parakeet TDT 0.6B v3), exported to ONNX by us
-  and published as tiyuvta/Phonon-2-ONNX; the int8 encoder is the default (closest on the owner's
+  and published as Avifenesh/Phonon-2-ONNX; the int8 encoder is the default (closest on the owner's
   product names, 0.9 to 1.1 GB peak in our runtime). Owner.
 - D12: no streaming recognizer. Silero VAD marks pauses and the recognizer runs on the turn so far
   at each pause, so nothing transcribes while nobody talks. The streaming one burned about five

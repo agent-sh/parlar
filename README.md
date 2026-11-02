@@ -9,8 +9,6 @@
   </p>
 </div>
 
-> Running open models for your company? [**Tiyuvta**](https://tiyuvta.ai/services/) helps with model choice, deployment and optimization, and fine-tuning on your hardware or cloud account.
-
 <p align="center"><img src="docs/demo.gif" alt="parlar in a Claude Code session: the user asks out loud to run the tests, the swarm turns blue while they talk, the agent runs them, the user steers mid-task, and the agent answers out loud in amber" width="960"></p>
 <p align="center"><sub>A staged demo (<a href="design/demo.html">design/demo.html</a>): the session and the swarm are drawn from a script, not captured.</sub></p>
 
@@ -230,7 +228,7 @@ by size and checksum (sha256, or CRC32C from Moonshine's manifest for Kokoro).
 
 | Model | Role | On disk | License | Source |
 |---|---|---:|---|---|
-| Phonon-2 ONNX, int8 encoder | speech recognition | 657 MB | CC-BY-4.0 | [tiyuvta/Phonon-2-ONNX](https://huggingface.co/tiyuvta/Phonon-2-ONNX) |
+| Phonon-2 ONNX, int8 encoder | speech recognition | 657 MB | CC-BY-4.0 | [Avifenesh/Phonon-2-ONNX](https://huggingface.co/Avifenesh/Phonon-2-ONNX) |
 | Kokoro-82M | voice | 104 MB | Apache-2.0 | through libmoonshine |
 | Smart Turn v3.2 | end of turn | 8 MB | BSD-2-Clause | [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3) |
 | Silero VAD v6 | voice activity | 2 MB | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) |
@@ -345,7 +343,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Conventions for agents working on this r
 ## Credits
 
 - Phonon-2 by [Fermion Research](https://huggingface.co/FermionResearch/Phonon-2), from NVIDIA's
-  Parakeet TDT 0.6B v3. ONNX conversion by [Tiyuvta](https://huggingface.co/tiyuvta).
+  Parakeet TDT 0.6B v3. ONNX conversion by [Avi Fenesh](https://huggingface.co/Avifenesh).
 - [Moonshine](https://github.com/moonshine-ai/moonshine) for libmoonshine and its Kokoro pipeline.
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M),
   [Smart Turn](https://github.com/pipecat-ai/smart-turn) by Pipecat, and

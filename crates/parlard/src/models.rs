@@ -338,10 +338,10 @@ fn file_crc32c(path: &Path) -> Result<u32> {
     }
 }
 
-/// Phonon-2 in ONNX (tiyuvta/Phonon-2-ONNX), pinned to one revision: the int8 encoder, the fp32
+/// Phonon-2 in ONNX (Avifenesh/Phonon-2-ONNX), pinned to one revision: the int8 encoder, the fp32
 /// decoder, its own preprocessor, vocab and config, each checked by sha256.
 const PHONON_REPO: &str =
-    "https://huggingface.co/tiyuvta/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
+    "https://huggingface.co/Avifenesh/Phonon-2-ONNX/resolve/df0802202a996b5c0574acd805968940f62a6a04";
 const PHONON_FILES: &[(&str, u64, &str)] = &[
     ("decoder_joint-model.onnx", 72_518_934, "420125e0e13596692320c35ef648eee9bf4583718c7896c8732ebf6f50b9ca0d"),
     ("preprocessor-model.onnx", 1_193_996, "8184d564f7d34d1daf04e4b35a0222fb72c54668b38dcd2b8ddda3517676614b"),
