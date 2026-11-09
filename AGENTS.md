@@ -12,7 +12,7 @@ Part of agent-sh. Design and decisions: `docs/DESIGN.md`. Indicator mockups:
   in `crates/parlard/src/stt.rs`) transcribing at pauses, endpointing with Smart Turn, Kokoro voice, repo vocabulary.
   Models load when a conversation starts and unload two minutes after it stops. Debug subcommands:
   `speak`, `final`, `turn`, `clean`, `devices`, `fetch`. The recognizer is the Phonon-2 ONNX export
-  published as Avifenesh/Phonon-2-ONNX on Hugging Face.
+  published as tiyuvta/Phonon-2-ONNX on Hugging Face.
 - `crates/parlar-moonshine`: bindings to libmoonshine for Kokoro, loaded at run time
   (libloading). `parlard fetch` downloads the pinned release (sha256 checked) into
   `$XDG_DATA_HOME/parlar/lib`; `models::lib_dir` also looks next to the binary and in
