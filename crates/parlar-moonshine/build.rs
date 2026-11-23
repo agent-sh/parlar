@@ -26,8 +26,9 @@ const WINDOWS_X64: Target = Target {
 const MACOS_ARM64: Target = Target {
     moonshine: "moonshine-voice-macos-arm64",
     moonshine_sha: "51151f98eb1b20b8fc141bab361a1574dbfdbef8300b632ee6679e373112e0f6",
-    // Microsoft's NuGet package, signed and immutable once published, holds the same library as
-    // its GitHub release tarball (install name @rpath/libonnxruntime.1.23.0.dylib)
+    // Microsoft's NuGet package, signed and immutable once published, holds the same 1.23.0
+    // build that its GitHub release tarball had, with the same install name
+    // (@rpath/libonnxruntime.1.23.0.dylib)
     ort: Some((
         "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.0/microsoft.ml.onnxruntime.1.23.0.nupkg",
         "cadbf21358de4b6002eddce08329465071271d52bb1483779f6f09670af281fc",
@@ -134,6 +135,7 @@ fn fetch_ort(cache: &Path, t: &Target) -> PathBuf {
     fetch_archive(cache, url, sha, Some(member));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::rename(cache.join(member), dir.join("libonnxruntime.dylib")).unwrap();
+    let _ = std::fs::remove_dir_all(cache.join("runtimes"));
     std::fs::copy(dir.join("libonnxruntime.dylib"), &versioned).unwrap();
     dir
 }
