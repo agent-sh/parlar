@@ -65,11 +65,17 @@ const ORT: &str = "libonnxruntime.1.23.0.dylib";
 const MOONSHINE: &str = ORT;
 #[cfg(not(target_os = "linux"))]
 const RUNTIME: &[&str] = &[ORT];
+/// The names of the `RUNTIME` files inside the release archive, in the same order.
+#[cfg(not(target_os = "macos"))]
+const ARCHIVED: &[&str] = RUNTIME;
+#[cfg(target_os = "macos")]
+const ARCHIVED: &[&str] = &["libonnxruntime.dylib"];
 
-/// Where the runtime files come from, per OS and architecture: the tarball URL, its sha256, and
+/// Where the runtime files come from, per OS and architecture: the archive URL, its sha256, and
 /// the folder inside it that holds the files. Linux takes libmoonshine's own release (shared
 /// library plus ONNX Runtime); Windows takes ONNX Runtime from libmoonshine's release too; macOS
-/// takes ONNX Runtime from Microsoft's release, because libmoonshine's macOS release has none.
+/// takes ONNX Runtime from Microsoft's NuGet package, because libmoonshine's macOS release has
+/// none.
 const RUNTIME_RELEASES: &[(&str, &str, &str, &str, &str)] = &[
     (
         "linux",
@@ -95,9 +101,9 @@ const RUNTIME_RELEASES: &[(&str, &str, &str, &str, &str)] = &[
     (
         "macos",
         "aarch64",
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz",
-        "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf",
-        "onnxruntime-osx-arm64-1.23.0/lib",
+        "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.0/microsoft.ml.onnxruntime.1.23.0.nupkg",
+        "cadbf21358de4b6002eddce08329465071271d52bb1483779f6f09670af281fc",
+        "runtimes/osx-arm64/native",
     ),
 ];
 
@@ -208,13 +214,16 @@ fn fetch_moonshine() -> Result<()> {
     let dest = parlar::dirs::data().join("lib");
     let tmp = dest.join(".fetch");
     let _ = std::fs::remove_dir_all(&tmp);
-    let tarball = File { sha256: Some((*sha).into()), size: None, ..File::new("runtime.tar.gz", url, 0) };
-    download(&Manifest { groups: vec![Group { files: vec![tarball] }] }, &tmp)?;
+    let archive = File { sha256: Some((*sha).into()), size: None, ..File::new("runtime.archive", url, 0) };
+    download(&Manifest { groups: vec![Group { files: vec![archive] }] }, &tmp)?;
+    // only the files parlard uses; tar detects the format (a tarball, or the NuGet zip that
+    // macOS's bsdtar reads)
     let ok = Command::new("tar")
-        .arg("xzf")
-        .arg(tmp.join("runtime.tar.gz"))
+        .arg("xf")
+        .arg(tmp.join("runtime.archive"))
         .arg("-C")
         .arg(&tmp)
+        .args(ARCHIVED.iter().map(|f| format!("{inner}/{f}")))
         .status()
         .context("run tar")?
         .success();
@@ -222,8 +231,8 @@ fn fetch_moonshine() -> Result<()> {
         bail!("unpack {url} failed");
     }
     std::fs::create_dir_all(&dest)?;
-    for lib in RUNTIME {
-        std::fs::rename(tmp.join(inner).join(lib), dest.join(lib)).with_context(|| format!("install {lib}"))?;
+    for (lib, archived) in RUNTIME.iter().zip(ARCHIVED) {
+        std::fs::rename(tmp.join(inner).join(archived), dest.join(lib)).with_context(|| format!("install {lib}"))?;
     }
     std::fs::remove_dir_all(&tmp)?;
     #[cfg(target_os = "macos")]

@@ -13,8 +13,8 @@ const VERSION: &str = "v0.1.5";
 struct Target {
     moonshine: &'static str,
     moonshine_sha: &'static str,
-    /// The tarball holding the ONNX Runtime library and its folder inside, when it is not in the
-    /// libmoonshine release.
+    /// The archive holding the ONNX Runtime library, its sha256 and the library's path inside it,
+    /// when it is not in the libmoonshine release.
     ort: Option<(&'static str, &'static str, &'static str)>,
 }
 
@@ -26,10 +26,12 @@ const WINDOWS_X64: Target = Target {
 const MACOS_ARM64: Target = Target {
     moonshine: "moonshine-voice-macos-arm64",
     moonshine_sha: "51151f98eb1b20b8fc141bab361a1574dbfdbef8300b632ee6679e373112e0f6",
+    // Microsoft's NuGet package, signed and immutable once published, holds the same library as
+    // its GitHub release tarball (install name @rpath/libonnxruntime.1.23.0.dylib)
     ort: Some((
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz",
-        "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf",
-        "onnxruntime-osx-arm64-1.23.0/lib",
+        "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.0/microsoft.ml.onnxruntime.1.23.0.nupkg",
+        "cadbf21358de4b6002eddce08329465071271d52bb1483779f6f09670af281fc",
+        "runtimes/osx-arm64/native/libonnxruntime.dylib",
     )),
 };
 
@@ -42,8 +44,14 @@ fn main() {
         return;
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out
-    let profile_dir = out.ancestors().nth(3).expect("OUT_DIR layout").to_path_buf();
+    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out, or
+    // <target>/<profile>/build/<crate>/<hash>/out in Cargo's newer build-dir layout
+    let profile_dir = out
+        .ancestors()
+        .find(|d| d.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR layout")
+        .to_path_buf();
     let cache = profile_dir.parent().unwrap().join("moonshine").join(VERSION);
     // a prebuilt release for the target, or the user's own unpacked one
     let known = match (os.as_str(), arch.as_str()) {
@@ -67,7 +75,7 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=onnxruntime");
         println!("cargo:rustc-link-arg=/DELAYLOAD:onnxruntime.dll");
         println!("cargo:rustc-link-lib=delayimp");
-        let _ = std::fs::copy(lib.join("onnxruntime.dll"), profile_dir.join("onnxruntime.dll"));
+        std::fs::copy(lib.join("onnxruntime.dll"), profile_dir.join("onnxruntime.dll")).expect("copy onnxruntime.dll");
     } else {
         println!("cargo:rustc-link-lib=static=moonshine");
         println!("cargo:rustc-link-lib=c++");
@@ -85,10 +93,8 @@ fn main() {
         if let Some(t) = &known {
             let ort_dir = fetch_ort(&cache, t);
             println!("cargo:rustc-link-search=native={}", ort_dir.display());
-            let _ = std::fs::copy(
-                ort_dir.join("libonnxruntime.1.23.0.dylib"),
-                profile_dir.join("libonnxruntime.1.23.0.dylib"),
-            );
+            std::fs::copy(ort_dir.join("libonnxruntime.1.23.0.dylib"), profile_dir.join("libonnxruntime.1.23.0.dylib"))
+                .expect("copy libonnxruntime.1.23.0.dylib");
         } else {
             println!("cargo:rustc-link-search=native={}", lib.display());
         }
@@ -112,24 +118,31 @@ fn fetch_moonshine(cache: &Path, t: &Target) -> PathBuf {
         return dir;
     }
     let url = format!("https://github.com/moonshine-ai/moonshine/releases/download/{VERSION}/{}.tar.gz", t.moonshine);
-    fetch_tarball(cache, &url, t.moonshine_sha);
+    fetch_archive(cache, &url, t.moonshine_sha, None);
     dir
 }
 
+/// ONNX Runtime 1.23.0 in `<cache>/onnxruntime-1.23.0`, as `libonnxruntime.dylib` for the linker
+/// and `libonnxruntime.1.23.0.dylib`, the name it is bound by at launch.
 fn fetch_ort(cache: &Path, t: &Target) -> PathBuf {
-    let (url, sha, inner) = t.ort.expect("macOS needs ONNX Runtime from its own release");
-    let dir = cache.join(inner);
-    if dir.exists() {
+    let (url, sha, member) = t.ort.expect("macOS needs ONNX Runtime from its own release");
+    let dir = cache.join("onnxruntime-1.23.0");
+    let versioned = dir.join("libonnxruntime.1.23.0.dylib");
+    if versioned.exists() {
         return dir;
     }
-    fetch_tarball(cache, url, sha);
+    fetch_archive(cache, url, sha, Some(member));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::rename(cache.join(member), dir.join("libonnxruntime.dylib")).unwrap();
+    std::fs::copy(dir.join("libonnxruntime.dylib"), &versioned).unwrap();
     dir
 }
 
-/// Download a tarball into `cache`, check its sha256, and unpack it there.
-fn fetch_tarball(cache: &Path, url: &str, sha: &str) {
+/// Download an archive (a tarball, or a zip such as a NuGet package) into `cache`, check its
+/// sha256, and unpack it there: all of it, or only `member`.
+fn fetch_archive(cache: &Path, url: &str, sha: &str, member: Option<&str>) {
     std::fs::create_dir_all(cache).unwrap();
-    let tarball = cache.join(format!("{}.tar.gz", sha));
+    let tarball = cache.join(format!("{}.archive", sha));
     // curl and tar ship with Windows 10 and later, and with macOS
     run(Command::new("curl").args(["-fsSL", "--retry", "3", "-o"]).arg(&tarball).arg(url), "download");
     let got = {
@@ -140,7 +153,8 @@ fn fetch_tarball(cache: &Path, url: &str, sha: &str) {
         let _ = std::fs::remove_file(&tarball);
         panic!("checksum mismatch for {url}: got {got}");
     }
-    run(Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(cache), "unpack");
+    // tar detects the format on extraction; the bsdtar in Windows and macOS also reads zip
+    run(Command::new("tar").arg("xf").arg(&tarball).arg("-C").arg(cache).args(member), "unpack");
     let _ = std::fs::remove_file(&tarball);
 }
 
