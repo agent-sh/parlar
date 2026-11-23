@@ -91,7 +91,16 @@ fn work(
                     if fresh {
                         fresh = false;
                         // a session closed while idle (or never opened) is opened as the turn starts
-                        streamed = r.warm(&terms()).is_ok();
+                        streamed = match r.warm(&terms()) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                failed(r, &e, fallback);
+                                if fallback == Fallback::Local {
+                                    fall_back(&mut local, fallback, &[]);
+                                }
+                                false
+                            }
+                        };
                     }
                     if streamed && r.append(&p).is_err() {
                         streamed = false;

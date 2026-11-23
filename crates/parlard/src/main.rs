@@ -89,7 +89,7 @@ enum Cmd {
     Final {
         #[arg(required = true)]
         wav: Vec<std::path::PathBuf>,
-        /// local (Phonon-2, ONNX) or openai; default: [recognizer] engine.
+        /// local (Phonon-2, ONNX) or openai; default: `[recognizer] engine`.
         #[arg(long)]
         engine: Option<String>,
         /// Model directory in the onnx-asr layout.
@@ -112,7 +112,7 @@ enum Cmd {
         out: std::path::PathBuf,
         #[arg(long)]
         voice: Option<String>,
-        /// local (Kokoro) or openai; default: [voice] engine.
+        /// local (Kokoro) or openai; default: `[voice] engine`.
         #[arg(long)]
         engine: Option<String>,
         /// One synthesis call per sentence instead of streamed chunks.
@@ -154,7 +154,7 @@ fn main() -> Result<()> {
                         src(cfg.recognizer.fallback.is_some())
                     );
                     for s in cfg.openai_settings(false) {
-                        println!("  {} = {}  ({})", s.key, s.value, s.from);
+                        println!("  {} = {}  ({})", s.key, openai::scrub(&s.value), s.from);
                     }
                 }
                 false => println!("recognizer:  local {local_rec} ({})", src(cfg.recognizer.engine.is_some())),
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
                     src(cfg.voice.fallback.is_some())
                 );
                 for s in cfg.openai_settings(true) {
-                    println!("  {} = {}  ({})", s.key, s.value, s.from);
+                    println!("  {} = {}  ({})", s.key, openai::scrub(&s.value), s.from);
                 }
             } else {
                 println!("voice:       local {kokoro} ({})", src(cfg.voice.engine.is_some()));

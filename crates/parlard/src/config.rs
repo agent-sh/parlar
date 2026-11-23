@@ -506,6 +506,11 @@ impl Config {
                 bail!("ip_family {f:?}: use \"auto\", \"v4\" or \"v6\"");
             }
         }
+        for t in [self.openai.timeout_ms, t.timeout_ms, self.recognizer.openai.timeout_ms].into_iter().flatten() {
+            if t < 100 {
+                bail!("timeout_ms {t}: use 100 or more");
+            }
+        }
         for c in [&self.openai.key_cmd, &t.key_cmd, &self.recognizer.openai.key_cmd].into_iter().flatten() {
             if c.is_empty() {
                 bail!("key_cmd is empty; leave it out to read the key from key_env");

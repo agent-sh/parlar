@@ -123,8 +123,7 @@ impl Swarm {
     pub fn step(&mut self, dt: f32, t: f32, lv: f32, al: f32, voice_off: bool) {
         let m = self.mode;
         let s = t - self.mode_since;
-        for i in 0..N {
-            let p = &mut self.p[i];
+        for (i, p) in self.p.iter_mut().enumerate().take(N) {
             let (tgt, k, jit, alpha, col): ((f32, f32), f32, f32, f32, Rgb) = match m {
                 Mode::Idle => {
                     let a = p.ph + t * 0.12;

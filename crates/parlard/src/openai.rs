@@ -263,6 +263,8 @@ impl Client {
         let tcp = race(&host, port, fam, self.connect_timeout()).map_err(|e| api_err(None, format!("{e:#}")))?;
         tcp.set_nodelay(true)?;
         tcp.set_read_timeout(Some(self.conn.timeout))?;
+        // a stalled route must not hold a send (and the thread doing it) for minutes
+        tcp.set_write_timeout(Some(self.conn.timeout))?;
         let connector = tls.then(|| {
             let mut roots = rustls::RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -284,7 +286,7 @@ impl Client {
             }
             Err(e) => return Err(api_err(None, format!("websocket: {e}"))),
         };
-        let ws = Ws { sock, born: Instant::now(), timeout: self.conn.timeout };
+        let ws = Ws { sock, born: Instant::now(), timeout: self.conn.timeout, draining: false };
         ws.set_poll(poll)?;
         Ok(ws)
     }
@@ -364,6 +366,9 @@ struct Ws {
     born: Instant,
     /// Longest wait for the server's next event before the call counts as failed.
     timeout: Duration,
+    /// A response the user talked over is still coming; its events are read off before the
+    /// next request.
+    draining: bool,
 }
 
 /// What a read found.
@@ -393,6 +398,12 @@ impl Ws {
             match self.sock.read() {
                 Ok(tungstenite::Message::Text(t)) => {
                     let v: Value = serde_json::from_str(t.as_str()).context("realtime event")?;
+                    if v["type"] == "error"
+                        && v.pointer("/error/code").and_then(Value::as_str) == Some("response_cancel_not_active")
+                    {
+                        // the response ended before the cancel reached it: nothing to undo
+                        continue;
+                    }
                     if v["type"] == "error" {
                         let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("error event");
                         // the same failures the HTTP API reports by status, for the fallback rules
@@ -644,8 +655,20 @@ impl Tts {
 
     fn realtime_sentence(&self, text: &str, audio: &mut dyn FnMut(&[f32], u32) -> bool) -> Result<()> {
         let mut guard = self.session.lock().unwrap();
+        // the session may have failed to open while this line waited for the lock
+        if !self.client.available() {
+            return Err(api_err(None, "the API is unavailable"));
+        }
         let mut retried = false;
         loop {
+            if let Some(ws) = guard.as_mut()
+                && ws.draining
+            {
+                ws.draining = false;
+                if ws.until("response.done", |_| {}).is_err() {
+                    *guard = None;
+                }
+            }
             let reused = guard.as_ref().is_some_and(|w| !w.stale());
             if !reused {
                 *guard = Some(self.open()?);
@@ -732,23 +755,15 @@ impl Tts {
         }
     }
 
-    /// Stop the response the user talked over. The session stays usable; what is still in
-    /// flight is read off so the next line starts clean.
+    /// Stop the response the user talked over and return at once: the session stays open, and
+    /// what is still in flight is read off before the next line.
     fn cancel(ws: &mut Ws, response: Option<&str>) -> Result<()> {
-        let mut ev = json!({"type": "response.cancel"});
+        // an out-of-band response is cancelled by id; before it has one, it is left to finish
         if let Some(id) = response {
-            ev["response_id"] = json!(id);
+            ws.send(&json!({"type": "response.cancel", "response_id": id}))?;
         }
-        ws.send(&ev)?;
-        let t0 = Instant::now();
-        while t0.elapsed() < Duration::from_millis(1500) {
-            if let Got::Event(v) = ws.read()?
-                && v["type"] == "response.done"
-            {
-                return Ok(());
-            }
-        }
-        Err(api_err(None, "the cancelled response did not end"))
+        ws.draining = true;
+        Ok(())
     }
 
     fn speech_sentence(&self, text: &str, audio: &mut dyn FnMut(&[f32], u32) -> bool) -> Result<()> {
@@ -816,6 +831,8 @@ pub struct Stt {
     session: Mutex<Option<Ws>>,
     /// The keyword list the open session was configured with.
     sent_keywords: Mutex<Vec<String>>,
+    /// 16 to 24 kHz for streamed audio, one state per segment so chunks join without a seam.
+    up: Mutex<crate::audio::Resampler>,
 }
 
 impl Stt {
@@ -831,6 +848,7 @@ impl Stt {
             delay: o.delay.clone().unwrap_or_else(|| crate::config::STT_DELAY.into()),
             session: Mutex::default(),
             sent_keywords: Mutex::default(),
+            up: Mutex::new(crate::audio::Resampler::new(16000, 24000)),
         }
     }
 
@@ -856,7 +874,9 @@ impl Stt {
     pub fn append(&self, pcm: &[f32]) -> Result<()> {
         let mut guard = self.session.lock().unwrap();
         let Some(ws) = guard.as_mut() else { bail!("no transcription session") };
-        let r = send_audio(ws, pcm);
+        let mut up = Vec::new();
+        self.up.lock().unwrap().process(pcm, &mut up);
+        let r = send_pcm24(ws, &up);
         if r.is_err() {
             *guard = None;
         }
@@ -865,9 +885,14 @@ impl Stt {
 
     /// Drop what was streamed since the last commit (the turn was dropped).
     pub fn clear(&self) {
+        self.new_segment();
         if let Some(ws) = self.session.lock().unwrap().as_mut() {
             let _ = ws.send(&json!({"type": "input_audio_buffer.clear"}));
         }
+    }
+
+    fn new_segment(&self) {
+        *self.up.lock().unwrap() = crate::audio::Resampler::new(16000, 24000);
     }
 
     /// Transcribe the speech since the last pause. `whole` is that speech at 16 kHz; `streamed`
@@ -876,6 +901,7 @@ impl Stt {
     pub fn commit(&self, whole: &[f32], streamed: bool, before: &str, terms: &[String]) -> Result<String> {
         let keywords = keywords(terms, self.keywords);
         if self.realtime {
+            self.new_segment();
             return self.realtime_commit(whole, streamed, &keywords);
         }
         let mut prompt = self.prompt.clone();
@@ -991,12 +1017,16 @@ impl Stt {
     }
 }
 
-/// 16 kHz samples up a Realtime session, as 24 kHz PCM16 in pieces of 1 s at most.
+/// 16 kHz samples up a Realtime session in one piece of speech.
 fn send_audio(ws: &mut Ws, pcm: &[f32]) -> Result<()> {
-    if pcm.is_empty() {
+    send_pcm24(ws, &crate::audio::resample(pcm, 16000, 24000))
+}
+
+/// 24 kHz samples up a Realtime session as PCM16, in pieces of 1 s at most.
+fn send_pcm24(ws: &mut Ws, up: &[f32]) -> Result<()> {
+    if up.is_empty() {
         return Ok(());
     }
-    let up = crate::audio::resample(pcm, 16000, 24000);
     let bytes: Vec<u8> = up.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
     for c in bytes.chunks(48000) {
         ws.send(&json!({"type": "input_audio_buffer.append",

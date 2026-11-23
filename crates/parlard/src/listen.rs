@@ -223,6 +223,8 @@ fn run(
     let mut turn_id = 0u64;
     // pauses sent to the recognizer and not answered yet
     let mut pending = 0usize;
+    // what the agent was saying at the last pause sent to the recognizer
+    let mut commit_echo = String::new();
     let drop_turn = |turn_id: &mut u64, pending: &mut usize| {
         *turn_id += 1;
         *pending = 0;
@@ -261,6 +263,7 @@ fn run(
                 in_turn = false;
                 paused = false;
                 drop_turn(&mut turn_id, &mut pending);
+                commit_echo.clear();
                 recent.buf.clear();
                 lines.clear();
                 ep = Endpointer::default();
@@ -317,6 +320,7 @@ fn run(
                         in_turn = false;
                         paused = false;
                         drop_turn(&mut turn_id, &mut pending);
+                        commit_echo.clear();
                         recent.buf.clear();
                         lines.clear();
                         ep = Endpointer::default();
@@ -395,8 +399,16 @@ fn run(
             // each pause costs the same however long the turn has run
             rec.commit(turn_id, &seg.text);
             pending += 1;
+            // the transcript comes back later, maybe after the echo window has closed: check it
+            // against what the agent was saying when this speech was heard
+            commit_echo = echo.current();
         }
-        while let Ok(p) = rec.done.try_recv() {
+        loop {
+            let p = match rec.done.try_recv() {
+                Ok(p) => p,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => anyhow::bail!("the recognizer stopped"),
+            };
             if p.turn != turn_id || !in_turn {
                 continue;
             }
@@ -433,7 +445,11 @@ fn run(
             eprintln!("turn score {p:.2}: {}", ep.text);
             ep.set_score(p);
         }
-        let events = if changed { ep.update(&lines, now, speaking, &echo.current()) } else { ep.tick(now) };
+        let echo_now = match echo.current() {
+            e if e.is_empty() => commit_echo.clone(),
+            e => e,
+        };
+        let events = if changed { ep.update(&lines, now, speaking, &echo_now) } else { ep.tick(now) };
         for ev in events {
             let ev = fix(ev);
             if matches!(ev, Heard::Turn { .. }) {
@@ -441,6 +457,7 @@ fn run(
                 in_turn = false;
                 paused = false;
                 drop_turn(&mut turn_id, &mut pending);
+                commit_echo.clear();
                 recent.buf.clear();
             }
             let _ = tx.send(ev);
@@ -450,6 +467,7 @@ fn run(
             in_turn = false;
             paused = false;
             drop_turn(&mut turn_id, &mut pending);
+            commit_echo.clear();
             recent.buf.clear();
         }
     }

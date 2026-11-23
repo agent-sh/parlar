@@ -226,14 +226,17 @@ impl Speaker for Kokoro {
                             }
                             Err(_) if stop.load(Ordering::SeqCst) => return,
                             Err(e) => {
-                                self.api_failed(r, &e);
+                                // another thread may have marked it failed already
+                                if r.client.available() {
+                                    self.api_failed(r, &e);
+                                }
                                 if self.fallback == Fallback::None {
                                     return;
                                 }
                                 remote = None;
                                 if got {
-                                    // part of it was heard; Kokoro goes on with the next sentence
-                                    let _ = tx.send(Made::End(s.clone()));
+                                    // part of it was heard, so it is not repeated, but it does not
+                                    // count as heard in a cut report; Kokoro goes on with the next
                                     continue;
                                 }
                             }
@@ -288,6 +291,9 @@ impl Kokoro {
                 stop.store(true, Ordering::SeqCst);
                 let played = total - self.player.queued_secs();
                 self.player.clear();
+                // the speaker is silent from here, even while the maker thread winds down
+                self.playing.store(false, Ordering::SeqCst);
+                self.echo.end();
                 let heard: Vec<&str> =
                     pushed.iter().filter(|(_, end)| *end <= played + 0.05).map(|(t, _)| t.as_str()).collect();
                 return Some(heard.join(" "));
