@@ -46,10 +46,14 @@ pub fn scrub(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     for w in text.split_whitespace() {
         let bare = w.trim_matches(|c: char| !c.is_alphanumeric());
+        // OpenAI keys start with sk-; other providers' are long mixed-case tokens. Model names
+        // ("gpt-4o-mini-transcribe-2025-12-15") are lowercase and stay.
         let keyish = bare.starts_with("sk-")
-            || (bare.len() >= 24
-                && bare.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                && bare.chars().any(|c| c.is_ascii_digit()));
+            || (bare.len() >= 32
+                && bare.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && bare.chars().any(|c| c.is_ascii_digit())
+                && bare.chars().any(|c| c.is_ascii_uppercase())
+                && bare.chars().any(|c| c.is_ascii_lowercase()));
         out.push(if keyish { "[key]".into() } else { w.into() });
     }
     let s = out.join(" ");
@@ -470,9 +474,9 @@ impl Pcm16 {
             self.carry = None;
             b = &b[1..];
         }
-        let mut it = b.chunks_exact(2);
-        out.extend(it.by_ref().map(|s| i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0));
-        if let [last] = it.remainder() {
+        let (pairs, rest) = b.as_chunks::<2>();
+        out.extend(pairs.iter().map(|s| i16::from_le_bytes(*s) as f32 / 32768.0));
+        if let [last] = rest {
             self.carry = Some(*last);
         }
     }
@@ -1114,6 +1118,9 @@ mod tests {
         assert!(!s.contains("abc123"), "{s}");
         assert!(s.contains("Incorrect API key provided"));
         assert_eq!(scrub("rate limit reached for requests"), "rate limit reached for requests");
+        let model = "model gpt-4o-mini-transcribe-2025-12-15 is not available";
+        assert_eq!(scrub(model), model);
+        assert!(scrub("token AbCdEfGh1234567890IjKlMnOp0987654321QrSt").contains("[key]"));
     }
 
     #[test]

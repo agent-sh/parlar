@@ -207,13 +207,24 @@ impl Speaker for Kokoro {
                     }
                     if let Some(r) = remote {
                         let mut got = false;
+                        // chunks at another rate are resampled with one state per sentence, so
+                        // they join without a click
+                        let mut up: Option<crate::audio::Resampler> = None;
                         let res = r.sentence(s, &mut |pcm, rate| {
                             if stop.load(Ordering::SeqCst) {
                                 return false;
                             }
                             if !pcm.is_empty() {
                                 got = true;
-                                return tx.send(Made::Audio(pcm.to_vec(), rate)).is_ok();
+                                if rate == crate::audio::VOICE_RATE {
+                                    return tx.send(Made::Audio(pcm.to_vec(), rate)).is_ok();
+                                }
+                                let rs = up.get_or_insert_with(|| {
+                                    crate::audio::Resampler::new(rate, crate::audio::VOICE_RATE)
+                                });
+                                let mut out = Vec::new();
+                                rs.process(pcm, &mut out);
+                                return tx.send(Made::Audio(out, crate::audio::VOICE_RATE)).is_ok();
                             }
                             true
                         });

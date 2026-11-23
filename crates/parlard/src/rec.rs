@@ -14,6 +14,9 @@ use crate::openai::Stt;
 use crate::stt::Tdt;
 use crate::vocab::Vocab;
 
+/// Longest stretch of speech kept for one pause: a minute at 16 kHz.
+const MAX_SEGMENT: usize = 16000 * 60;
+
 enum Job {
     /// Speech of the current turn, 16 kHz.
     Append(Vec<f32>),
@@ -106,9 +109,21 @@ fn work(
                         streamed = false;
                     }
                 } else {
+                    // the segment began without the API: if it comes back mid-segment, the
+                    // whole segment goes up at the pause, not just its tail
+                    fresh = false;
                     streamed = false;
                 }
                 buf.extend_from_slice(&p);
+                if buf.len() > MAX_SEGMENT {
+                    // a pause that never comes: keep the last minute, as the listener does, and
+                    // send that at the pause instead of an ever longer stream
+                    buf.drain(..buf.len() - MAX_SEGMENT);
+                    if streamed && let Some(r) = remote.as_ref().filter(|r| r.streams()) {
+                        r.clear();
+                    }
+                    streamed = false;
+                }
             }
             Job::Reset => {
                 if !buf.is_empty()
