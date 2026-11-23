@@ -1,8 +1,12 @@
-//! Kokoro through libmoonshine, one synthesis call per sentence, played through the speaker
-//! buffer. Barge-in clears the buffer at once, so audio can be synthesized well ahead.
+//! The agent's voice: Kokoro through libmoonshine (one synthesis call per sentence) or an
+//! OpenAI-compatible API (streamed per sentence), played through the speaker buffer. Barge-in
+//! clears the buffer at once, so audio can be made well ahead. Both go through the same player,
+//! so the echo canceller hears what was played and barge-in works the same.
 //!
 //! The voice model loads when a conversation starts (or on the first line) and unloads once the
-//! conversation has been off and silent for `UNLOAD_AFTER`, like the listener's models.
+//! conversation has been off and silent for `UNLOAD_AFTER`, like the listener's models. With the
+//! API voice, the session opens when a conversation starts instead, and Kokoro loads only when
+//! the API fails.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,8 +18,10 @@ use parlar::voice::Speaker;
 use parlar_moonshine::Tts;
 
 use crate::audio::Player;
+use crate::config::Fallback;
 use crate::listen::{Echo, UNLOAD_AFTER};
 use crate::models;
+use crate::openai;
 
 /// A speaker that has not asked for audio this long is stuck (suspended, gone); the line is
 /// given up so the queue moves on.
@@ -31,11 +37,20 @@ pub struct Kokoro {
     pub playing: Arc<AtomicBool>,
     /// What is playing, plus a moment after, for the listener's echo check.
     pub echo: Echo,
+    /// The API voice, when it is the engine; Kokoro is then the fallback.
+    remote: Option<openai::Tts>,
+    fallback: Fallback,
 }
 
 impl Kokoro {
     /// `active` is raised while a conversation is on.
-    pub fn new(voice: &str, player: Arc<Player>, active: Arc<AtomicBool>) -> Arc<Self> {
+    pub fn new(
+        voice: &str,
+        player: Arc<Player>,
+        active: Arc<AtomicBool>,
+        remote: Option<openai::Tts>,
+        fallback: Fallback,
+    ) -> Arc<Self> {
         let k = Arc::new(Kokoro {
             tts: Mutex::new(None),
             voice: voice.into(),
@@ -43,6 +58,8 @@ impl Kokoro {
             player,
             playing: Arc::default(),
             echo: Echo::default(),
+            remote,
+            fallback,
         });
         let weak = Arc::downgrade(&k);
         let life = move || {
@@ -52,6 +69,21 @@ impl Kokoro {
                 let Some(k) = weak.upgrade() else { return };
                 if active.load(Ordering::SeqCst) {
                     off_since = None;
+                    if let Some(r) = &k.remote {
+                        // open the session ahead of the first line; a failure waits retry_after_s
+                        if r.client.available()
+                            && let Err(e) = r.warm()
+                        {
+                            k.api_failed(r, &e);
+                            if k.fallback == Fallback::Local {
+                                // load Kokoro now rather than in front of the first line
+                                if let Err(e) = k.ready() {
+                                    eprintln!("voice: {e:#}");
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     match k.ready() {
                         Ok(_) => failed = false,
                         Err(e) if !failed => {
@@ -64,6 +96,9 @@ impl Kokoro {
                 }
                 let off = off_since.get_or_insert_with(Instant::now).elapsed();
                 if off > UNLOAD_AFTER && k.last.lock().unwrap().elapsed() > UNLOAD_AFTER {
+                    if let Some(r) = &k.remote {
+                        r.close();
+                    }
                     // a line being spoken holds the lock; try again on the next tick
                     if let Ok(mut t) = k.tts.try_lock()
                         && t.take().is_some()
@@ -76,6 +111,20 @@ impl Kokoro {
         };
         std::thread::Builder::new().name("voice-life".into()).spawn(life).expect("spawn voice thread");
         k
+    }
+
+    /// The API failed: say so once, and keep off it for `retry_after_s`.
+    fn api_failed(&self, r: &openai::Tts, e: &anyhow::Error) {
+        r.client.failed(e);
+        let next = match self.fallback {
+            Fallback::Local => "Kokoro speaks",
+            Fallback::None => "lines are not spoken",
+        };
+        eprintln!(
+            "{}: {e:#}; {next} for {} s, then the API is tried again",
+            r.client.what,
+            r.client.conn.retry_after.as_secs()
+        );
     }
 
     /// The synthesizer, loaded if it is not.
@@ -115,39 +164,96 @@ impl Drop for Playing<'_> {
     }
 }
 
+/// What the maker thread hands the player.
+enum Made {
+    Audio(Vec<f32>, u32),
+    /// The sentence whose audio was just handed over is complete.
+    End(String),
+}
+
 impl Speaker for Kokoro {
     fn speak(&self, text: &str, cancel: &AtomicBool) -> Option<String> {
-        let guard = match self.ready() {
-            Ok(g) => g,
-            Err(e) => {
+        let remote = self.remote.as_ref().filter(|r| r.client.available());
+        // Kokoro is needed up front only when the API is not used for this line
+        if remote.is_none() {
+            if self.remote.is_some() && self.fallback == Fallback::None {
+                eprintln!("voice: the API is unavailable and fallback is off; line not spoken");
+                return None;
+            }
+            if let Err(e) = self.ready() {
                 eprintln!("voice: {e:#}; line not spoken");
                 return None;
             }
-        };
-        let tts = guard.as_ref().expect("loaded by ready");
+        }
         let _done = Done(self);
         self.echo.start(text);
         self.playing.store(true, Ordering::SeqCst);
         let _playing = Playing(self);
-        let sentences =
-            parlar_moonshine::split_utterances(tts_language(), text).unwrap_or_else(|_| vec![text.to_string()]);
+        let sentences = split(text);
         let stop = AtomicBool::new(false);
-        let (tx, rx) = std::sync::mpsc::channel::<(String, Vec<f32>, u32)>();
-        let (tts_ref, sentences_ref, stop_ref) = (tts, &sentences, &stop);
+        let (tx, rx) = std::sync::mpsc::channel::<Made>();
+        let (sentences_ref, stop_ref) = (&sentences, &stop);
         std::thread::scope(|scope| {
-            // whole sentences, synthesized ahead on their own thread: one call per sentence has no
-            // seams inside it, and the speaker never waits on the synthesizer mid-sentence. The
+            // whole sentences, made ahead on their own thread: the speaker never waits on the
+            // maker mid-sentence, and the next sentence is requested while this one plays. The
             // sender moves into the thread, so the player sees the end when the last one is made.
             scope.spawn(move || {
-                let (tts, sentences, stop) = (tts_ref, sentences_ref, stop_ref);
+                let (sentences, stop) = (sentences_ref, stop_ref);
+                let mut remote = remote;
+                let mut guard = None;
                 for s in sentences {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
+                    if let Some(r) = remote {
+                        let mut got = false;
+                        let res = r.sentence(s, &mut |pcm, rate| {
+                            if stop.load(Ordering::SeqCst) {
+                                return false;
+                            }
+                            if !pcm.is_empty() {
+                                got = true;
+                                return tx.send(Made::Audio(pcm.to_vec(), rate)).is_ok();
+                            }
+                            true
+                        });
+                        match res {
+                            Ok(()) => {
+                                if tx.send(Made::End(s.clone())).is_err() {
+                                    return;
+                                }
+                                continue;
+                            }
+                            Err(_) if stop.load(Ordering::SeqCst) => return,
+                            Err(e) => {
+                                self.api_failed(r, &e);
+                                if self.fallback == Fallback::None {
+                                    return;
+                                }
+                                remote = None;
+                                if got {
+                                    // part of it was heard; Kokoro goes on with the next sentence
+                                    let _ = tx.send(Made::End(s.clone()));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    if guard.is_none() {
+                        match self.ready() {
+                            Ok(g) => guard = Some(g),
+                            Err(e) => {
+                                eprintln!("voice: {e:#}; rest of the line not spoken");
+                                return;
+                            }
+                        }
+                    }
+                    let tts = guard.as_ref().and_then(|g| g.as_ref()).expect("loaded by ready");
                     match tts.synthesize(s) {
                         Ok((pcm, rate)) if !pcm.is_empty() => {
                             let pcm = tighten(&pcm, rate as u32);
-                            if tx.send((s.clone(), pcm, rate as u32)).is_err() {
+                            if tx.send(Made::Audio(pcm, rate as u32)).is_err() || tx.send(Made::End(s.clone())).is_err()
+                            {
                                 return;
                             }
                         }
@@ -171,16 +277,12 @@ impl Speaker for Kokoro {
 impl Kokoro {
     /// Feed synthesized sentences to the speaker until they are all heard, the user cuts in, or
     /// the speaker stops taking audio. Returns the words heard before a cut.
-    fn play(
-        &self,
-        rx: std::sync::mpsc::Receiver<(String, Vec<f32>, u32)>,
-        cancel: &AtomicBool,
-        stop: &AtomicBool,
-    ) -> Option<String> {
+    fn play(&self, rx: std::sync::mpsc::Receiver<Made>, cancel: &AtomicBool, stop: &AtomicBool) -> Option<String> {
         // (sentence, seconds of audio up to its end) for everything handed to the speaker
         let mut pushed: Vec<(String, f32)> = Vec::new();
         let mut total = 0f32;
         let mut done = false;
+        let t0 = Instant::now();
         loop {
             if cancel.load(Ordering::SeqCst) {
                 stop.store(true, Ordering::SeqCst);
@@ -192,11 +294,14 @@ impl Kokoro {
             }
             if !done {
                 match rx.recv_timeout(Duration::from_millis(15)) {
-                    Ok((text, pcm, rate)) => {
+                    Ok(Made::Audio(pcm, rate)) => {
+                        if total == 0.0 {
+                            eprintln!("voice: first audio in {:.0} ms", t0.elapsed().as_secs_f32() * 1e3);
+                        }
                         total += pcm.len() as f32 / rate as f32;
                         self.player.push(&pcm, rate);
-                        pushed.push((text, total));
                     }
+                    Ok(Made::End(text)) => pushed.push((text, total)),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => done = true,
                 }
@@ -214,6 +319,32 @@ impl Kokoro {
             }
         }
     }
+}
+
+/// The line as sentences, the way libmoonshine splits them; without libmoonshine (an API voice
+/// with no local install), at sentence-ending punctuation.
+fn split(text: &str) -> Vec<String> {
+    parlar_moonshine::split_utterances(tts_language(), text).unwrap_or_else(|_| split_sentences(text))
+}
+
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        cur.push(c);
+        if matches!(c, '.' | '!' | '?') && chars.peek().is_none_or(|n| n.is_whitespace()) {
+            // "1.5" and "e.g." stay inside; a short piece joins the next
+            if cur.split_whitespace().count() >= 3 {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
 }
 
 /// Kokoro leaves long silences at sentence ends and commas (0.4 to 0.7 s), which sound like the
@@ -247,6 +378,15 @@ pub fn tighten(pcm: &[f32], rate: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentences_split_at_their_end_only() {
+        assert_eq!(
+            split_sentences("Done. The p95 went from 1.2 s to 480 ms! Push it now? Yes"),
+            vec!["Done. The p95 went from 1.2 s to 480 ms!", "Push it now?", "Yes"]
+        );
+        assert_eq!(split_sentences("One sentence only"), vec!["One sentence only"]);
+    }
 
     #[test]
     fn long_pauses_are_capped_and_short_ones_kept() {

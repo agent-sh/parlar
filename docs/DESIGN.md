@@ -22,7 +22,9 @@ Non-goals:
 - Not a dictation tool and not a general voice assistant. The brain is always the harness agent.
 - No speech-to-speech model (Moshi and similar bring their own LLM).
 - No terminal injection (PTY, tmux send-keys, xdotool).
-- No cloud speech services by default.
+- No cloud speech services by default. An OpenAI-compatible API can stand in for the voice, the
+  recognizer or both when the user configures it (D19); the local engines stay the default and
+  the fallback.
 
 ## 2. Components
 
@@ -124,6 +126,7 @@ say -> text filter -> sentence split -> TTS per sentence -> playback (and AEC fa
 | STT | Moonshine v2 Small (123M, MIT) | owner choice. streaming, English. Swappable engine trait |
 | End of turn | Smart Turn v3.2 (8 MB, BSD-2) | audio based, trained on fillers |
 | TTS | Kokoro-82M (Apache-2.0) | owner choice. sentence streaming |
+| API (optional) | OpenAI Realtime: gpt-realtime-2.1-mini voice, gpt-transcribe recognizer | D19. Same player, pauses and vocabulary as the local engines |
 
 Runtime: libmoonshine (MIT) runs both the recognizer and Kokoro, with its own MIT G2P, so there
 is no espeak-ng and no GPL in the process. Smart Turn runs through `ort` 2.0.0-rc.10 loaded
@@ -309,4 +312,39 @@ sees this session lose focus.
   background waiter instead of dropping it, and parlard watches the focused session's transcript
   for "[Request interrupted by user" to end the turn and let the parked waiter wake it. Codex has
   an Interrupt hook for the same.
-
+- D19 (2026-11-23): optional API speech. `[voice] engine = "openai"` and `[recognizer] engine =
+  "openai"` move each stage to an OpenAI-compatible API; the owner wanted external voices and
+  asked for the best OpenAI has today, measured, with everything configurable. The `--voice-cmd`
+  path was not enough: its audio bypasses the player, so echo cancellation and barge-in miss it.
+  - Voice: the API audio goes through the same `Player` as Kokoro, so the speaker callback feeds
+    the AEC far end, the playing flag drives barge-in, and a cut reports the sentences heard. One
+    request per sentence (the daemon's split), streamed: playback starts on the first chunk, and
+    the next sentence is requested as soon as the last one has arrived, well before it has played.
+  - Voice model, measured from this laptop on 2026-11-23 (warm connection, `marin`): the Realtime
+    API with gpt-realtime-2.1-mini gave first audio in 0.57 to 0.82 s on 8 lines and read every one
+    word for word, questions and commands included, when told to act as a text to speech engine.
+    gpt-realtime-2.1 was the same or slower (0.71 to 0.82 s). `/v1/audio/speech` with
+    gpt-4o-mini-tts took 0.5 to 1.3 s (1.9 s on a new connection), and the speech endpoint models
+    (gpt-4o-mini-tts, tts-1, tts-1-hd) are deprecated and shut down on 2027-01-06, with
+    gpt-realtime-2.1-mini named as their replacement. gpt-audio-1.5 through Chat Completions
+    answered two of four lines instead of reading them. Default: gpt-realtime-2.1-mini over a
+    Realtime session, out-of-band responses (`conversation: "none"`) so no context builds up.
+    `api = "speech"` stays for other providers, which mostly offer that endpoint.
+  - Recognizer, measured on 16 LibriSpeech dev-clean clips plus 6 Kokoro lines full of repo and
+    product names (WER, time from the request or commit to the text): gpt-transcribe 2.5% / 6.7%
+    (4.0% with keyword hints), 0.82 s per file request and 0.64 s per Realtime commit;
+    gpt-4o-transcribe 3.3% / 8.0%, 0.99 s; gpt-4o-mini-transcribe-2025-12-15 6.2% / 13.3%, 0.65 s;
+    gpt-live-transcribe 9.5% / 6.7%, 1.7 s after a commit; gpt-realtime-whisper 3.3% / 6.7%, 1.2 s.
+    Phonon-2 locally: 5.0% / 9.3% in about 0.2 s. Default: gpt-transcribe in a Realtime
+    transcription session. The listener streams the turn's audio into it as it is heard and
+    commits at each pause, so endpointing (D12) is unchanged: nothing goes up while nobody
+    talks, and the text at each pause drives the hold rules and Smart Turn as before. The repo
+    vocabulary goes up as keyword hints and still runs its join pass on the text.
+  - Transcription moved to its own thread for every engine: a network round trip at a pause no
+    longer stops the mic loop, so levels and barge-in keep running while a pause is transcribed.
+  - Failures (network, 401, 429, a stalled stream) are logged once, the local engine takes over
+    for `retry_after_s` (60 s), and Kokoro or Phonon-2 load only then. `fallback = "none"` drops
+    the line or the transcript instead.
+  - The key comes from `key_cmd` or an environment variable, lives in memory and is scrubbed from
+    any error text that is logged. Connections race IPv6 against IPv4 and keep the winner
+    (`ip_family`), because a host whose IPv6 route hangs would otherwise stall the first sentence.

@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Optional API speech: `[voice] engine = "openai"` and `[recognizer] engine = "openai"` move the
+  voice, the recognizer or both to an OpenAI-compatible API. The defaults, picked by measurement,
+  are `gpt-realtime-2.1-mini` (voice `marin`) and `gpt-transcribe`, both over Realtime sessions.
+  The API voice plays through the same player as Kokoro, so echo cancellation and barge-in work
+  the same; the API recognizer runs at the same pauses as Phonon-2 and gets the repo's names as
+  keyword hints. On a failed call the local engine stands in for a minute. Every model, voice,
+  style, format, endpoint, key source, timeout and fallback setting is in config.toml, and
+  `parlard config` shows each value and where it came from.
+- `parlard speak` and `parlard final` take `--engine local|openai` and print the time to first
+  audio per sentence and the transcription time per file; `final` takes several files.
+
+### Changed
+- The recognizer runs on its own thread, so a slow transcription at a pause no longer holds up
+  the mic loop, the level meter or barge-in.
+
 ## [0.1.10] - 2026-10-04
 
 ### Fixed

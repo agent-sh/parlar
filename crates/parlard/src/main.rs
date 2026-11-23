@@ -3,6 +3,8 @@ mod audio;
 mod config;
 mod listen;
 mod models;
+mod openai;
+mod rec;
 mod speak;
 mod stt;
 mod turn;
@@ -83,9 +85,13 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         lead_ms: u32,
     },
-    /// Transcribe a WAV with the recognizer (Phonon-2, ONNX).
+    /// Transcribe WAVs with the recognizer in config.toml (or --engine) and report the time.
     Final {
-        wav: std::path::PathBuf,
+        #[arg(required = true)]
+        wav: Vec<std::path::PathBuf>,
+        /// local (Phonon-2, ONNX) or openai; default: [recognizer] engine.
+        #[arg(long)]
+        engine: Option<String>,
         /// Model directory in the onnx-asr layout.
         #[arg(long)]
         model: Option<std::path::PathBuf>,
@@ -99,13 +105,16 @@ enum Cmd {
         #[arg(long)]
         dump: Option<std::path::PathBuf>,
     },
-    /// Synthesize text to a WAV file and report timing.
+    /// Synthesize text to a WAV file and report timing (time to first audio per sentence).
     Speak {
         text: String,
         #[arg(long, default_value = "parlar-speak.wav")]
         out: std::path::PathBuf,
         #[arg(long)]
         voice: Option<String>,
+        /// local (Kokoro) or openai; default: [voice] engine.
+        #[arg(long)]
+        engine: Option<String>,
         /// One synthesis call per sentence instead of streamed chunks.
         #[arg(long)]
         sentences: bool,
@@ -129,34 +138,82 @@ fn main() -> Result<()> {
                 if config::path().exists() { "" } else { " (not present, defaults)" }
             );
             println!("language:    {}", l.code);
-            println!("recognizer:  {} ({})", cfg.recognizer(), models::final_dir().display());
-            match cfg.voice.command.is_empty() {
-                true => println!(
-                    "voice:       {} ({})",
-                    voice_name(None).if_empty("libmoonshine's default"),
-                    l.tts.unwrap_or("-")
-                ),
-                false => println!("voice:       command {:?}", cfg.voice.command),
+            let src = |set: bool| if set { "config.toml" } else { "default" };
+            let fb = |f: config::Fallback| match f {
+                config::Fallback::Local => "local",
+                config::Fallback::None => "none",
+            };
+            let openai_rec = cfg.recognizer_engine() == config::Engine::OpenAi;
+            let local_rec = format!("{} ({})", cfg.recognizer(), models::final_dir().display());
+            match openai_rec {
+                true => {
+                    println!("recognizer:  openai {} ({})", cfg.stt_model(), src(cfg.recognizer.engine.is_some()));
+                    println!(
+                        "  fallback = {:?}  ({}), local engine {local_rec}",
+                        fb(cfg.recognizer_fallback()),
+                        src(cfg.recognizer.fallback.is_some())
+                    );
+                    for s in cfg.openai_settings(false) {
+                        println!("  {} = {}  ({})", s.key, s.value, s.from);
+                    }
+                }
+                false => println!("recognizer:  local {local_rec} ({})", src(cfg.recognizer.engine.is_some())),
+            }
+            let kokoro = format!("{} ({})", voice_name(None).if_empty("libmoonshine's default"), l.tts.unwrap_or("-"));
+            if !cfg.voice.command.is_empty() {
+                println!("voice:       command {:?} (config.toml)", cfg.voice.command);
+            } else if cfg.voice_engine() == config::Engine::OpenAi {
+                println!("voice:       openai {} ({})", cfg.tts_model(), src(cfg.voice.engine.is_some()));
+                println!(
+                    "  fallback = {:?}  ({}), local voice {kokoro}",
+                    fb(cfg.voice_fallback()),
+                    src(cfg.voice.fallback.is_some())
+                );
+                for s in cfg.openai_settings(true) {
+                    println!("  {} = {}  ({})", s.key, s.value, s.from);
+                }
+            } else {
+                println!("voice:       local {kokoro} ({})", src(cfg.voice.engine.is_some()));
             }
             return Ok(());
         }
-        Some(Cmd::Speak { text, out, voice, sentences }) => return speak(&text, &out, &voice_name(voice), sentences),
-        Some(Cmd::Final { wav, model, threads }) => {
-            let dir = model.unwrap_or_else(models::final_dir);
+        Some(Cmd::Speak { text, out, voice, engine, sentences }) => {
+            if engine_arg(engine.as_deref(), cfg.voice_engine())? == config::Engine::OpenAi {
+                return speak_openai(&text, &out);
+            }
+            return speak(&text, &out, &voice_name(voice), sentences);
+        }
+        Some(Cmd::Final { wav, engine, model, threads }) => {
+            let openai = engine_arg(engine.as_deref(), cfg.recognizer_engine())? == config::Engine::OpenAi;
             let t0 = std::time::Instant::now();
-            let mut m = stt::Tdt::load(&dir, &models::ort_lib(), threads)?;
-            let load = t0.elapsed();
-            let (pcm, rate) = wav::read(&wav)?;
-            let pcm = audio::resample(&pcm, rate, 16000);
-            let t1 = std::time::Instant::now();
-            let text = m.transcribe(&pcm)?;
-            println!("{text}");
-            eprintln!(
-                "load {:.0} ms, {:.1} s of audio in {:.0} ms",
-                load.as_secs_f32() * 1e3,
-                pcm.len() as f32 / 16000.0,
-                t1.elapsed().as_secs_f32() * 1e3
-            );
+            let (mut local, remote) = if openai {
+                let r = openai::Stt::from_config(cfg);
+                let cwd = std::env::current_dir()?;
+                let terms = vocab::Vocab::from_dir(&cwd, 0).terms;
+                r.warm(&terms)?;
+                (None, Some((r, terms)))
+            } else {
+                let dir = model.unwrap_or_else(models::final_dir);
+                (Some(stt::Tdt::load(&dir, &models::ort_lib(), threads)?), None)
+            };
+            eprintln!("{} {:.0} ms", if openai { "connect" } else { "load" }, t0.elapsed().as_secs_f32() * 1e3);
+            for w in &wav {
+                let (pcm, rate) = wav::read(w)?;
+                let pcm = audio::resample(&pcm, rate, 16000);
+                let t1 = std::time::Instant::now();
+                let text = match (&mut local, &remote) {
+                    (Some(m), _) => m.transcribe(&pcm)?,
+                    (_, Some((r, terms))) => r.commit(&pcm, false, "", terms)?,
+                    _ => unreachable!(),
+                };
+                println!("{text}");
+                eprintln!(
+                    "{}: {:.1} s of audio in {:.0} ms",
+                    w.display(),
+                    pcm.len() as f32 / 16000.0,
+                    t1.elapsed().as_secs_f32() * 1e3
+                );
+            }
             return Ok(());
         }
         Some(Cmd::Turn { wav, dump }) => {
@@ -221,6 +278,7 @@ async fn serve(cli: Cli) -> Result<()> {
 
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut kokoro = None;
+    let cfg = config::get();
     // --silent wins over a voice command from config.toml (test harnesses rely on it)
     let voice_cmd = match (cli.voice_cmd.is_empty(), cli.silent) {
         (false, _) => cli.voice_cmd.clone(),
@@ -240,9 +298,22 @@ async fn serve(cli: Cli) -> Result<()> {
             player.open(None)?;
         }
         // load the library now, so a missing install shows at start; the voice itself loads with
-        // the first conversation
-        models::moonshine()?;
-        let k = speak::Kokoro::new(&voice_name(cli.voice.clone()), player.clone(), active.clone());
+        // the first conversation. With an API voice, Kokoro is only the fallback.
+        let remote = (cfg.voice_engine() == config::Engine::OpenAi).then(|| openai::Tts::from_config(cfg));
+        match models::moonshine() {
+            Err(e) if remote.is_some() => eprintln!("local voice unavailable ({e:#}); the API voice has no fallback"),
+            r => r?,
+        }
+        if remote.is_some() {
+            eprintln!("voice: openai {} ({})", cfg.tts_model(), cfg.voice_conn().base_url);
+        }
+        let k = speak::Kokoro::new(
+            &voice_name(cli.voice.clone()),
+            player.clone(),
+            active.clone(),
+            remote,
+            cfg.voice_fallback(),
+        );
         kokoro = Some((k.clone(), player));
         voice::Engine::Speaker(k)
     };
@@ -406,6 +477,55 @@ async fn terminated() -> Result<()> {
 #[cfg(windows)]
 async fn terminated() -> Result<()> {
     tokio::signal::windows::ctrl_close()?.recv().await;
+    Ok(())
+}
+
+/// The engine a debug command uses: its flag, else the configured one.
+fn engine_arg(flag: Option<&str>, configured: config::Engine) -> Result<config::Engine> {
+    match flag {
+        None => Ok(configured),
+        Some("local") => Ok(config::Engine::Local),
+        Some("openai") => Ok(config::Engine::OpenAi),
+        Some(e) => anyhow::bail!("--engine {e:?}: use local or openai"),
+    }
+}
+
+/// The API voice, sentence by sentence as parlard speaks a line, into a WAV: the session or
+/// connection setup, then the time to first audio and to the end of each sentence.
+fn speak_openai(text: &str, out: &std::path::Path) -> Result<()> {
+    use std::time::Instant;
+    let cfg = config::get();
+    let tts = openai::Tts::from_config(cfg);
+    let t0 = Instant::now();
+    tts.warm()?;
+    eprintln!("{} via {}: connect {:.0} ms", cfg.tts_model(), cfg.tts_api(), t0.elapsed().as_secs_f32() * 1e3);
+    let (mut pcm, mut rate) = (Vec::new(), 24000);
+    let t1 = Instant::now();
+    for s in speak::split_sentences(text) {
+        let t = Instant::now();
+        let mut first = None;
+        tts.sentence(&s, &mut |p, r| {
+            if !p.is_empty() {
+                first.get_or_insert(t.elapsed());
+                rate = r;
+                pcm.extend_from_slice(p);
+            }
+            true
+        })?;
+        eprintln!(
+            "first audio {:.0} ms, done {:.0} ms: {s}",
+            first.unwrap_or_default().as_secs_f32() * 1e3,
+            t.elapsed().as_secs_f32() * 1e3
+        );
+    }
+    wav::write(out, &pcm, rate)?;
+    eprintln!(
+        "{:.1} s of audio in {:.0} ms, {} Hz -> {}",
+        pcm.len() as f32 / rate as f32,
+        t1.elapsed().as_secs_f32() * 1e3,
+        rate,
+        out.display()
+    );
     Ok(())
 }
 

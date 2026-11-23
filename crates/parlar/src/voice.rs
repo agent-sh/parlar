@@ -121,6 +121,7 @@ impl Engine {
                 let (s, text, c) = (s.clone(), line.text.clone(), cancel.clone());
                 let cut = tokio::task::spawn_blocking(move || s.speak(&text, &c)).await.ok().flatten();
                 if let Some(cut) = cut {
+                    eprintln!("say: cut off after {cut:?}");
                     was_cut = true;
                     line.state.lock().await.set_cut(cut);
                 }

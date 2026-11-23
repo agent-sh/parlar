@@ -43,6 +43,9 @@ Everything runs locally on the CPU. No audio and no transcript leaves your machi
   dot rs") are joined into the names of the repo you are working in.
 - End of turn: word rules plus the Smart Turn v3.2 audio model.
 - Voice: Kokoro-82M, synthesized one sentence at a time, so there are no seams inside a sentence.
+- Optional API speech: the voice, the recognizer, or both can run through OpenAI (or another
+  OpenAI-compatible API) instead of on your machine, with the local engines as the fallback. Echo
+  cancellation, barge-in and the repo vocabulary work the same.
 - Indicator (GNOME): a small swarm of fireflies floating above your windows. Blue is you, amber is
   the agent, and a red spark is a failed tool call. Click to stop or start. Right-click to pick the
   session, the mic and the speaker, to mute or turn the voice off, or to close the indicator
@@ -273,6 +276,78 @@ decoder_joint, vocab.txt, and a preprocessor). Hebrew is not covered by either r
 libmoonshine yet. Outside English the turn rules rely on punctuation and the Smart Turn model,
 which is multilingual, rather than on English filler words.
 
+## Speech through the OpenAI API
+
+The voice and the recognizer can each run through an OpenAI-compatible API instead of locally.
+You pay the provider per use; nothing else changes. The API voice plays through the same speaker
+path as Kokoro, so echo cancellation hears it and talking over it stops it. The API recognizer runs
+at the same pauses as Phonon-2, so endpointing and the repo vocabulary pass work the same, and the
+repo's names also go to the API as keyword hints.
+
+```toml
+[voice]
+engine = "openai"
+
+[recognizer]
+engine = "openai"
+
+[openai]
+key_cmd = ["secret-tool", "lookup", "service", "openai", "account", "api"]
+```
+
+The key comes from `key_cmd` (a program that prints it, run once) or from `$OPENAI_API_KEY`. It
+stays in memory and is never logged. When a call fails (network, a refused key, a rate limit), the
+log says why and the local engine takes over for `retry_after_s`, then the API is tried again. The
+conversation keeps going either way.
+
+Defaults, picked by measurement (see the decision log): the voice is `gpt-realtime-2.1-mini` over
+a Realtime session with the `marin` voice, told to read each sentence word for word; the
+recognizer is `gpt-transcribe` in a Realtime transcription session, fed while you talk and
+committed at each pause.
+
+| Key | Where | Default | Meaning |
+|---|---|---|---|
+| `engine` | `[voice]`, `[recognizer]` | `"local"` | `"local"` or `"openai"` |
+| `fallback` | `[voice]`, `[recognizer]` | `"local"` | on an API failure: `"local"` uses Kokoro or Phonon-2 for `retry_after_s`; `"none"` drops the line or the transcript |
+| `api` | `[voice.openai]` | `"realtime"` | `"realtime"` (WebSocket session) or `"speech"` (`POST /audio/speech`, what most compatible providers offer) |
+| `model` | `[voice.openai]` | `"gpt-realtime-2.1-mini"`; `"gpt-4o-mini-tts"` with `api = "speech"` | the voice model |
+| `voice` | `[voice.openai]` | `"marin"` | a voice the model has (`cedar`, `coral`, ...) or a custom voice id |
+| `instructions` | `[voice.openai]` | `"Calm, clear and warm, at an even pace."` | delivery style. Not sent to `tts-1` models |
+| `speed` | `[voice.openai]` | `1.0` | 0.25 to 1.5 (realtime) or 0.25 to 4.0 (speech) |
+| `format` | `[voice.openai]` | `"pcm"` | `"pcm"`, or `"wav"` with `api = "speech"` |
+| `rate` | `[voice.openai]` | `24000` | sample rate of `"pcm"` from the speech API (OpenAI sends 24000; realtime is always 24000) |
+| `api` | `[recognizer.openai]` | `"realtime"` | `"realtime"` (a transcription session) or `"file"` (`POST /audio/transcriptions` at each pause) |
+| `model` | `[recognizer.openai]` | `"gpt-transcribe"` | the recognizer model (`gpt-live-transcribe`, `gpt-4o-transcribe`, `whisper-1`, ...) |
+| `prompt` | `[recognizer.openai]` | a line saying this is a developer talking to a coding agent | context for the recognizer; the file API also gets the turn so far |
+| `keywords` | `[recognizer.openai]` | `60` | how many of the focused repo's names to send as keyword hints; `0` sends none |
+| `languages` | `[recognizer.openai]` | the `language` setting | language hints, ISO 639-1 codes |
+| `delay` | `[recognizer.openai]` | `"low"` | `gpt-live-transcribe` only: `minimal` to `xhigh` |
+| `base_url` | `[openai]` | `"https://api.openai.com/v1"` | any OpenAI-compatible API |
+| `key_env` | `[openai]` | `"OPENAI_API_KEY"` | the variable that holds the key when there is no `key_cmd` |
+| `key_cmd` | `[openai]` | none | a program and its arguments that print the key |
+| `timeout_ms` | `[openai]` | `10000` | longest wait for the API's next answer or audio before the call counts as failed |
+| `retry_after_s` | `[openai]` | `60` | how long the local engine stands in after a failure |
+| `ip_family` | `[openai]` | `"auto"` | `"auto"` races IPv6 and IPv4 and keeps the winner; `"v4"` or `"v6"` to force one |
+
+Every `[openai]` key can also go in `[voice.openai]` or `[recognizer.openai]` to apply to that
+engine only, for example a different provider for each. `parlard config` prints every setting in
+use and where it came from. `parlard speak "text"` and `parlard final file.wav` use the configured
+engine (or `--engine local|openai`) and print the time to first audio and the transcription time.
+
+Measured on 2026-11-23 from a laptop on a home connection (the API reached over IPv4 in 10 to 50
+ms), with the machine under heavy load from other work:
+
+| | API | local |
+|---|---|---|
+| voice: first audio of a sentence | 0.6 to 0.7 s on an open session (`parlard speak`), 0.8 to 1.3 s from the start of a line in parlard | 0.3 to 0.5 s |
+| voice: opening the session, once per conversation | 0.8 to 2.6 s | loading Kokoro, about 1 to 2 s |
+| recognizer: transcript at a pause | 0.7 to 1.0 s | 0.2 to 0.3 s |
+| WER, 16 LibriSpeech dev-clean clips | 2.5% (`gpt-transcribe`) | 5.0% (Phonon-2) |
+| WER, 6 lines of repo and product names | 6.7%, 4.0% with keyword hints | 9.3% |
+
+With the API engines parlard does not load Kokoro or Phonon-2 unless the API fails, so a
+conversation uses about the memory of the voice detector and the end-of-turn model.
+
 ## Resource use
 
 Measured on a Core Ultra 9 275HX laptop:
@@ -307,8 +382,10 @@ harness <- hooks + MCP (parlar) <- unix socket <- parlard (focus, routing, voice
 ## Privacy
 
 Audio is processed in memory and never written to disk, unless you set `PARLAR_DUMP_TURNS` for
-debugging. Transcripts go only to the focused session, through the plugin. Nothing is sent over the
-network after `parlard fetch`.
+debugging. Transcripts go only to the focused session, through the plugin. With the local engines
+(the default), nothing is sent over the network after `parlard fetch`. With an API engine, the
+agent's spoken lines (voice) or your speech and the focused repo's file and directory names
+(recognizer) go to the configured API.
 
 ## Troubleshooting
 

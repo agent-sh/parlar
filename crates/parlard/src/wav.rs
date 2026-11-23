@@ -1,11 +1,23 @@
-//! 16-bit mono WAV writer, for debugging output.
+//! 16-bit mono WAV: written for debugging output and for upload to a recognizer API.
 
 use std::io::Write;
 use std::path::Path;
 
 pub fn write(path: &Path, pcm: &[f32], rate: u32) -> std::io::Result<()> {
-    let data = (pcm.len() * 2) as u32;
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    write_to(&mut f, pcm, rate)?;
+    f.flush()
+}
+
+/// The WAV file's bytes.
+pub fn encode(pcm: &[f32], rate: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(44 + pcm.len() * 2);
+    write_to(&mut b, pcm, rate).expect("writing to memory");
+    b
+}
+
+fn write_to(f: &mut impl Write, pcm: &[f32], rate: u32) -> std::io::Result<()> {
+    let data = (pcm.len() * 2) as u32;
     f.write_all(b"RIFF")?;
     f.write_all(&(36 + data).to_le_bytes())?;
     f.write_all(b"WAVEfmt ")?;
@@ -21,7 +33,7 @@ pub fn write(path: &Path, pcm: &[f32], rate: u32) -> std::io::Result<()> {
     for s in pcm {
         f.write_all(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes())?;
     }
-    f.flush()
+    Ok(())
 }
 
 /// Read a 16-bit PCM WAV (mono or the first channel).

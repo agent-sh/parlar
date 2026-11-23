@@ -89,12 +89,12 @@ struct Models {
     vad: Option<crate::vad::Vad>,
     /// End-of-turn audio model; without it the word rule alone decides.
     turn: Option<crate::turn::SmartTurn>,
-    /// The speech recognizer, run on the turn so far at each pause.
-    final_stt: Option<crate::stt::Tdt>,
+    /// The speech recognizer, run on the turn so far at each pause, on its own thread.
+    rec: Option<crate::rec::Recognizer>,
 }
 
 impl Models {
-    fn load() -> Result<Models> {
+    fn load(vocab: &Arc<Mutex<Vocab>>) -> Result<Models> {
         use crate::models;
         let t0 = Instant::now();
         let ort = models::ort_lib();
@@ -102,10 +102,19 @@ impl Models {
         let vad = crate::vad::Vad::load(&models::vad_model(), &ort).map_err(|e| soft("voice detector", e)).ok();
         let turn =
             crate::turn::SmartTurn::load(&models::turn_model(), &ort).map_err(|e| soft("end-of-turn model", e)).ok();
-        let final_stt =
-            crate::stt::Tdt::load(&models::final_dir(), &ort, 4).map_err(|e| soft("final-transcript model", e)).ok();
+        let cfg = crate::config::get();
+        let rec = if cfg.recognizer_engine() == crate::config::Engine::OpenAi {
+            // Phonon-2 loads only if the API fails
+            let remote = crate::openai::Stt::from_config(cfg);
+            Some(crate::rec::Recognizer::start(None, Some(remote), cfg.recognizer_fallback(), vocab.clone()))
+        } else {
+            crate::stt::Tdt::load(&models::final_dir(), &ort, 4)
+                .map_err(|e| soft("final-transcript model", e))
+                .ok()
+                .map(|t| crate::rec::Recognizer::start(Some(t), None, cfg.recognizer_fallback(), vocab.clone()))
+        };
         eprintln!("speech models loaded in {:.1} s", t0.elapsed().as_secs_f32());
-        Ok(Models { vad, turn, final_stt })
+        Ok(Models { vad, turn, rec })
     }
 }
 
@@ -133,8 +142,8 @@ pub fn spawn(
             while !cfg.gate.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            let mut m = match Models::load() {
-                Ok(m) if m.final_stt.is_some() => m,
+            let mut m = match Models::load(&cfg.vocab) {
+                Ok(m) if m.rec.is_some() => m,
                 result => {
                     // missing models are a setup problem, not a crash: stay up, say why, and try
                     // again the next time a conversation starts
@@ -205,10 +214,20 @@ fn run(
     echo: &Echo,
     tx: &UnboundedSender<Heard>,
 ) -> Result<Exit> {
-    let (vad, turn, stt) = (&mut m.vad, &mut m.turn, &mut m.final_stt);
-    if stt.is_none() {
+    let (vad, turn) = (&mut m.vad, &mut m.turn);
+    let Some(rec) = m.rec.as_ref() else {
         anyhow::bail!("no speech recognition model in {}", crate::models::final_dir().display());
-    }
+    };
+    // which turn the recognizer's answers belong to: bumped whenever a turn ends or is dropped,
+    // so a late transcript of a dropped turn is not added to the next one
+    let mut turn_id = 0u64;
+    // pauses sent to the recognizer and not answered yet
+    let mut pending = 0usize;
+    let drop_turn = |turn_id: &mut u64, pending: &mut usize| {
+        *turn_id += 1;
+        *pending = 0;
+        rec.reset();
+    };
     let mut closed_since: Option<Instant> = None;
     let mut ep = Endpointer::default();
     // one line per turn, in the shape the endpointer reads
@@ -241,6 +260,7 @@ fn run(
             if closed_since.is_none() {
                 in_turn = false;
                 paused = false;
+                drop_turn(&mut turn_id, &mut pending);
                 recent.buf.clear();
                 lines.clear();
                 ep = Endpointer::default();
@@ -296,6 +316,7 @@ fn run(
                     if in_turn && turn_over_echo {
                         in_turn = false;
                         paused = false;
+                        drop_turn(&mut turn_id, &mut pending);
                         recent.buf.clear();
                         lines.clear();
                         ep = Endpointer::default();
@@ -318,7 +339,9 @@ fn run(
                         turn_over_echo = echoing;
                         recent.buf.clear();
                         seg = Segments::default();
-                        recent.push(&preroll.buf.drain(..).collect::<Vec<f32>>());
+                        let pre: Vec<f32> = preroll.buf.drain(..).collect();
+                        rec.append(&pre);
+                        recent.push(&pre);
                         lines.push(line(String::new(), false));
                         changed = true;
                     } else if paused {
@@ -333,7 +356,7 @@ fn run(
                 }
                 if in_turn && !line_clipped {
                     recent.push(&f);
-                    seg.total += f.len();
+                    rec.append(&f);
                 } else if in_turn {
                     // a turn kept from before the clip ends here: the clipped echo is not its audio
                 } else {
@@ -370,25 +393,24 @@ fn run(
             paused = true;
             // only the speech since the last pause: a pause is silence, so it is a clean cut, and
             // each pause costs the same however long the turn has run
-            let audio = seg.take(&recent);
-            let t0 = Instant::now();
-            let text = stt.as_mut().expect("checked above").transcribe(&audio).unwrap_or_else(|e| {
-                eprintln!("recognizer: {e:#}");
-                String::new()
-            });
-            let text = seg.append(&text);
-            eprintln!(
-                "hearing ({:.0} ms, {:.1} s new): {text}",
-                t0.elapsed().as_secs_f32() * 1e3,
-                audio.len() as f32 / frames.rate as f32
-            );
+            rec.commit(turn_id, &seg.text);
+            pending += 1;
+        }
+        while let Ok(p) = rec.done.try_recv() {
+            if p.turn != turn_id || !in_turn {
+                continue;
+            }
+            pending = pending.saturating_sub(1);
+            let text = seg.append(&p.text);
+            eprintln!("hearing ({:.0} ms, {:.1} s new): {text}", p.ms, p.secs);
             if let Some(l) = lines.last_mut() {
                 l.text = text;
-                l.complete = true;
+                // the user may have started again while it was transcribed
+                l.complete = paused && pending == 0;
             }
             changed = true;
         }
-        if in_turn && !paused {
+        if in_turn && (!paused || pending > 0) {
             // still talking: the open line must not look settled
             ep.touch(now);
         }
@@ -418,14 +440,16 @@ fn run(
                 dump_turn(dump.as_deref(), &ev, &recent, frames.rate);
                 in_turn = false;
                 paused = false;
+                drop_turn(&mut turn_id, &mut pending);
                 recent.buf.clear();
             }
             let _ = tx.send(ev);
         }
         // a turn whose words were all echo or nothing: let the next one start fresh
-        if in_turn && paused && ep.text.is_empty() {
+        if in_turn && paused && pending == 0 && ep.text.is_empty() {
             in_turn = false;
             paused = false;
+            drop_turn(&mut turn_id, &mut pending);
             recent.buf.clear();
         }
     }
@@ -443,27 +467,13 @@ fn dump_turn(dir: Option<&std::path::Path>, ev: &Heard, recent: &Recent, rate: u
         std::fs::write(dir.join(format!("{stamp}.txt")), format!("{}\n{}\n", text, heard.clone().unwrap_or_default()));
 }
 
-/// The last few seconds of mic audio, for the end-of-turn model.
-/// The turn so far as text plus the audio not yet transcribed, counted in samples since the turn
-/// began so the position survives the recent buffer dropping its oldest audio.
+/// The turn so far as text; the recognizer holds the audio not yet transcribed.
 #[derive(Default)]
 struct Segments {
     text: String,
-    /// Samples pushed this turn after the preroll.
-    total: usize,
-    /// `total` at the last pause.
-    start: usize,
 }
 
 impl Segments {
-    /// The audio since the last pause (or the whole turn, preroll included, at the first one).
-    fn take(&mut self, recent: &Recent) -> Vec<f32> {
-        let new = self.total - self.start;
-        let from = if self.start == 0 { 0 } else { recent.buf.len().saturating_sub(new) };
-        self.start = self.total;
-        recent.buf.iter().skip(from).copied().collect()
-    }
-
     /// Add what the latest piece said and return the whole turn's text.
     fn append(&mut self, piece: &str) -> String {
         let piece = piece.trim();
@@ -477,6 +487,7 @@ impl Segments {
     }
 }
 
+/// The last few seconds of mic audio, for the end-of-turn model.
 struct Recent {
     buf: std::collections::VecDeque<f32>,
     cap: usize,
